@@ -1,0 +1,1233 @@
+/**
+ * MindfulSEO Admin Styles
+ * Mindful Design Branding - WooCommerce-style Interface
+ * 
+ * @package MindfulSEO
+ * @since 1.0.0
+ */
+
+/* Brand Colors - Mindful Design:
+ * Gold Primary: #e1ca8e
+ * Gold Medium: #b8a064
+ * Gold Dark: #93845e
+ * Text: #50575e (grey)
+ * Background: #ffffff (white)
+ */
+
+:root {
+    --mindful-gold-primary: #e1ca8e;
+    --mindful-gold-medium: #b8a064;
+    --mindful-gold-dark: #93845e;
+    --mindful-text: #50575e;
+    --mindful-text-dark: #1d2327;
+    --mindful-text-medium: #2c3338;
+    --mindful-bg-white: #ffffff;
+    --mindful-bg-light: #f9f9f9;
+    --mindful-border: #dcdcde;
+}
+
+/* CRITICAL FIX: Hide WordPress notices initially to prevent flash during JS repositioning */
+/* Target notices that appear BEFORE the wrap div (WordPress core behavior) */
+#wpbody-content > .notice:not(.notice-positioned),
+#wpbody-content > .updated:not(.notice-positioned),
+#wpbody-content > .error:not(.notice-positioned),
+#wpbody-content > .fs-notice:not(.notice-positioned),
+.wrap.mindfulseo-dashboard .notice:not(.notice-positioned),
+.wrap.mindfulseo-dashboard .updated:not(.notice-positioned),
+.wrap.mindfulseo-dashboard .error:not(.notice-positioned),
+.wrap.mindfulseo-settings-wrap .notice:not(.notice-positioned),
+.wrap.mindfulseo-settings-wrap .updated:not(.notice-positioned),
+.wrap.mindfulseo-settings-wrap .error:not(.notice-positioned),
+.wrap.mindfulseo-keywords-wrap .notice:not(.notice-positioned),
+.wrap.mindfulseo-keywords-wrap .updated:not(.notice-positioned),
+.wrap.mindfulseo-keywords-wrap .error:not(.notice-positioned),
+.wrap.mindfulseo-guidelines-wrap .notice:not(.notice-positioned),
+.wrap.mindfulseo-guidelines-wrap .updated:not(.notice-positioned),
+.wrap.mindfulseo-guidelines-wrap .error:not(.notice-positioned),
+.wrap.mindfulseo-page .notice:not(.notice-positioned),
+.wrap.mindfulseo-page .updated:not(.notice-positioned),
+.wrap.mindfulseo-page .error:not(.notice-positioned),
+.wrap.mindfulseo-admin-wrap .notice:not(.notice-positioned),
+.wrap.mindfulseo-admin-wrap .updated:not(.notice-positioned),
+.wrap.mindfulseo-admin-wrap .error:not(.notice-positioned) {
+    opacity: 0;
+    visibility: hidden;
+    position: absolute;
+    transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out;
+}
+
+/* Show notices once positioned by JavaScript */
+.notice.notice-positioned,
+.updated.notice-positioned,
+.error.notice-positioned {
+    opacity: 1 !important;
+    visibility: visible !important;
+    position: relative !important;
+    top: auto !important;
+    left: 0 !important;
+    margin: 10px 20px 10px 0 !important;
+}
+
+/* Ensure notices appear before branding header */
+.mindfulseo-branding-header {
+    clear: both;
+    position: relative;
+    z-index: 1;
+}
+
+/* Main Wrapper */
+.mindfulseo-dashboard,
+.mindfulseo-admin-wrap,
+.mindfulseo-settings-wrap,
+.mindfulseo-keywords-wrap,
+.mindfulseo-guidelines-wrap,
+.mindfulseo-page {
+    margin: 0 20px 20px 0 !important;
+    max-width: none !important;
+    background: var(--mindful-bg-white);
+    border-radius: 4px;
+    box-sizing: border-box;
+    padding: 30px; /* Add default padding */
+}
+
+/* Remove padding from pages that have guides (guide adds its own spacing) */
+.mindfulseo-keywords-wrap,
+.mindfulseo-guidelines-wrap {
+    padding: 30px 30px 0 30px; /* Padding on top and sides only */
+}
+
+/* ========================================
+   TAB NAVIGATION (Modern Document Reader Style)
+   Matching mindfulevents-sync-tec styling
+   ======================================== */
+
+.mindfulseo-keywords-wrap .nav-tab-wrapper,
+.mindfulseo-guidelines-wrap .nav-tab-wrapper,
+.mindfulseo-keywords-wrap h2.nav-tab-wrapper,
+.mindfulseo-guidelines-wrap h2.nav-tab-wrapper {
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-top: 1px solid #ddd;
+    border-bottom: 1px solid #ddd;
+    background: #f9f9f9;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    box-shadow: none;
+}
+
+.mindfulseo-keywords-wrap .nav-tab,
+.mindfulseo-guidelines-wrap .nav-tab {
+    margin: 0 !important;
+    padding: 14px 24px !important;
+    border: none !important;
+    background: transparent !important;
+    color: #646970;
+    font-size: 15px;
+    font-weight: 500;
+    text-decoration: none;
+    border-radius: 0;
+    position: relative;
+    transition: all 0.2s ease;
+    box-shadow: none !important;
+    outline: none !important;
+    border-bottom: 3px solid transparent !important;
+}
+
+.mindfulseo-keywords-wrap .nav-tab:hover,
+.mindfulseo-guidelines-wrap .nav-tab:hover {
+    background: #fff !important;
+    color: #2c3338;
+    border-bottom-color: #ccc !important;
+}
+
+.mindfulseo-keywords-wrap .nav-tab:focus,
+.mindfulseo-keywords-wrap .nav-tab:active,
+.mindfulseo-guidelines-wrap .nav-tab:focus,
+.mindfulseo-guidelines-wrap .nav-tab:active {
+    outline: none !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+
+.mindfulseo-keywords-wrap .nav-tab-active,
+.mindfulseo-guidelines-wrap .nav-tab-active {
+    background: #fff !important;
+    color: var(--mindful-text-dark) !important;
+    font-weight: 600;
+    border-bottom: 3px solid var(--mindful-gold-medium) !important;
+}
+
+.mindfulseo-keywords-wrap .nav-tab-active:hover,
+.mindfulseo-guidelines-wrap .nav-tab-active:hover {
+    background: #fff !important;
+    border-bottom-color: var(--mindful-gold-medium) !important;
+}
+
+.mindfulseo-keywords-wrap .nav-tab-active:focus,
+.mindfulseo-guidelines-wrap .nav-tab-active:focus {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* Tab icons */
+.mindfulseo-keywords-wrap .nav-tab .dashicons,
+.mindfulseo-guidelines-wrap .nav-tab .dashicons {
+    font-size: 16px;
+    height: 16px;
+    width: 16px;
+    vertical-align: text-bottom;
+    margin-right: 5px;
+}
+
+/* Tab Content */
+.mindfulseo-tab-content {
+    background: var(--mindful-bg-white);
+    padding: 30px;
+    border: none;
+    margin: 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    border-radius: 0 0 4px 4px;
+}
+
+/* Batch Optimizer specific - no gap between header and content */
+.mindfulseo-page {
+    padding: 0 !important; /* Remove default padding */
+    margin: 0 20px 20px 0 !important; /* Standard margin like other pages */
+    background: var(--mindful-bg-white);
+    border-radius: 4px;
+}
+
+.mindfulseo-page .mindfulseo-branding-header {
+    margin: 20px 20px 0 0 !important; /* Match other pages */
+    border-radius: 4px 4px 0 0;
+}
+
+.mindfulseo-page .mindfulseo-content {
+    padding: 30px; /* Add padding to content only */
+}
+
+.mindfulseo-page .mindfulseo-stats-grid {
+    padding: 0 !important; /* Remove padding, parent handles it */
+    margin: 0 0 30px 0 !important;
+}
+
+/* Branding Header - WooCommerce Style */
+.mindfulseo-branding-header {
+    background: var(--mindful-bg-white);
+    padding: 25px 30px;
+    margin: 20px 20px 0 0;
+    border-bottom: 1px solid var(--mindful-border);
+    border-radius: 4px 4px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    max-width: none !important;
+    box-sizing: border-box;
+    clear: both;
+    position: relative;
+    z-index: 1;
+}
+
+/* Quick Start Guide - Universal Styling */
+.quick-start-box-wrapper {
+    margin: 0 0 20px 0 !important;
+    max-width: 1150px !important; /* Match content width */
+}
+
+.quick-start-box-wrapper > div:first-child {
+    display: flex !important;
+    align-items: flex-start !important;
+    gap: 0 !important; /* Remove gap, use padding instead */
+    position: relative !important; /* Add positioning context */
+}
+
+.quick-start-toggle {
+    flex: 1 !important;
+    background: var(--mindful-bg-white);
+    border: 1px solid var(--mindful-border);
+    padding: 12px 70px 12px 20px !important; /* Add right padding for dismiss button */
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--mindful-text-dark);
+    text-align: left;
+    transition: background 0.2s;
+}
+
+.quick-start-toggle:hover {
+    background: var(--mindful-bg-light);
+}
+
+.quick-start-toggle .dashicons {
+    transition: transform 0.3s;
+    margin-left: 10px;
+    flex-shrink: 0;
+}
+
+.quick-start-toggle.active {
+    border-radius: 4px 4px 0 0; /* Only round top corners when expanded */
+}
+
+.quick-start-toggle.active .dashicons {
+    transform: rotate(180deg);
+}
+
+.quick-start-content {
+    display: none;
+    background: var(--mindful-bg-white);
+    border: 1px solid var(--mindful-border);
+    border-top: none;
+    padding: 20px;
+    border-radius: 0 0 4px 4px;
+    clear: both; /* Ensure it doesn't overlap */
+}
+
+.quick-start-dismiss {
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+    font-weight: 400 !important;
+    color: #999 !important;
+    text-decoration: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    transition: all 0.2s !important;
+    white-space: nowrap !important;
+    background: transparent !important;
+    position: absolute !important; /* Position absolutely */
+    right: 10px !important; /* Margin from right edge */
+    top: 50% !important; /* Center vertically */
+    transform: translateY(-50%) !important; /* Perfect centering */
+    z-index: 100 !important; /* Very high z-index to stay on top */
+    cursor: pointer !important;
+}
+
+.quick-start-dismiss:hover {
+    color: #d63638;
+    border: none;
+    background: transparent;
+    text-decoration: underline;
+}
+
+.mindfulseo-brand-content {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.mindfulseo-brand-icon img {
+    height: 40px;
+    width: auto;
+    opacity: 1;
+}
+
+.mindfulseo-brand-text h1 {
+    margin: 0;
+    font-size: 23px;
+    font-weight: 400;
+    color: var(--mindful-text-dark);
+    line-height: 1.3;
+}
+
+.mindfulseo-brand-text .mindfulseo-brand-tagline {
+    margin: 3px 0 0 0;
+    font-size: 13px;
+    color: var(--mindful-text);
+}
+
+.mindfulseo-brand-logo img {
+    height: 32px;
+    width: auto;
+    opacity: 0.9;
+}
+
+/* Dashboard Welcome Panel - Modern Document Style */
+/* Welcome Card - Matching other pages */
+.mindfulseo-welcome-card {
+    background: #fff;
+    border: 1px solid var(--mindful-border);
+    box-shadow: none;
+    padding: 25px 30px;
+    margin: 0;
+    border-radius: 0;
+}
+
+.mindfulseo-welcome-card h2 {
+    margin-top: 0;
+    font-size: 21px;
+    font-weight: 600;
+    color: #1d2327;
+    line-height: 1.4;
+    margin-bottom: 10px;
+}
+
+.mindfulseo-welcome-panel {
+    background: #fff;
+    border: none;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+    padding: 40px 50px;
+    margin: 20px 0;
+    border-radius: 8px;
+}
+
+.mindfulseo-welcome-panel h2 {
+    margin-top: 0;
+    font-size: 32px;
+    font-weight: 700;
+    color: #1d2327;
+    line-height: 1.3;
+    letter-spacing: -0.02em;
+    margin-bottom: 15px;
+}
+
+.mindfulseo-welcome-panel .about-description {
+    font-size: 16px;
+    margin: 1em 0;
+    color: #50575e;
+    line-height: 1.7;
+}
+
+.mindfulseo-welcome-panel p {
+    color: #50575e;
+    line-height: 1.7;
+}
+
+/* Welcome Panel Columns */
+.welcome-panel-column h3 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #2c3338;
+    margin-top: 0;
+}
+
+.welcome-panel-column ul {
+    list-style: none;
+    padding: 0;
+}
+
+.welcome-panel-column ul li {
+    margin-bottom: 8px;
+    color: #50575e;
+}
+
+.welcome-panel-column ul li a {
+    color: #8B0000;
+    text-decoration: none;
+}
+
+.welcome-panel-column ul li a:hover {
+    color: #5a0000;
+    text-decoration: underline;
+}
+
+/* Stats Grid */
+.mindfulseo-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 20px;
+    margin: 20px 0;
+}
+
+.mindfulseo-stat-card {
+    background: var(--mindful-bg-white);
+    border: 1px solid var(--mindful-border);
+    border-left: 3px solid var(--mindful-border);
+    padding: 20px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    transition: all 0.2s ease;
+}
+
+.mindfulseo-stat-card:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.mindfulseo-stat-card .stat-icon {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.mindfulseo-stat-card .stat-icon img {
+    width: 32px;
+    height: 32px;
+    display: block;
+}
+
+.mindfulseo-stat-card .stat-content {
+    flex: 1;
+}
+
+.mindfulseo-stat-card .stat-value {
+    font-size: 32px;
+    font-weight: 600;
+    line-height: 1;
+    margin: 0 0 8px 0;
+    color: var(--mindful-text-dark);
+}
+
+.mindfulseo-stat-card .stat-label {
+    font-size: 13px;
+    color: var(--mindful-text-medium);
+    font-weight: 500;
+    margin: 0;
+}
+
+/* Stat Card Colors - Professional & Minimal */
+.mindfulseo-stat-card.stat-success {
+    border-left-color: #46b450;
+    background: #f7fcf8;
+}
+
+.mindfulseo-stat-card.stat-success .stat-value {
+    color: #2d7a39;
+}
+
+.mindfulseo-stat-card.stat-warning {
+    border-left-color: var(--mindful-gold-medium);
+    background: #fefcf8;
+}
+
+.mindfulseo-stat-card.stat-warning .stat-value {
+    color: var(--mindful-gold-dark);
+}
+
+.mindfulseo-stat-card.stat-info {
+    border-left-color: #8c8f94;
+    background: #f6f7f7;
+}
+
+.mindfulseo-stat-card.stat-info .stat-value {
+    color: #50575e;
+}
+
+.mindfulseo-stat-card h3 {
+    margin: 0 0 15px 0;
+    font-size: 14px;
+    color: #646970;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.mindfulseo-stat-card .stat-number {
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--mindful-gold-dark);
+    margin: 0;
+    line-height: 1.2;
+}
+
+/* Status Panel */
+.mindfulseo-status-panel {
+    background: #fff;
+    border: none;
+    padding: 40px 50px;
+    margin: 20px 0;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+
+.mindfulseo-status-panel h2 {
+    margin-top: 0;
+    font-size: 24px;
+    font-weight: 600;
+    color: #2c3338;
+    margin-bottom: 20px;
+}
+
+.mindfulseo-status-panel table {
+    color: #50575e;
+}
+
+.mindfulseo-status-panel td {
+    color: #50575e;
+}
+
+/* Settings Page */
+.mindfulseo-settings-wrap {
+    background: #fff;
+    padding: 40px 50px;
+    margin: 20px 0;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+    max-width: 1000px;
+}
+
+.mindfulseo-settings-wrap h1 {
+    font-size: 32px;
+    font-weight: 700;
+    color: #1d2327;
+    margin-top: 0;
+}
+
+.mindfulseo-settings-wrap h2 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--mindful-text-medium);
+    margin-top: 40px;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--mindful-gold-primary);
+}
+
+.mindfulseo-settings-wrap .form-table th {
+    width: 250px;
+    color: #2c3338;
+    font-weight: 500;
+}
+
+.mindfulseo-settings-wrap .form-table td {
+    color: #50575e;
+}
+
+.mindfulseo-settings-wrap .description {
+    color: #646970;
+    font-size: 13px;
+    font-style: normal;
+    margin-top: 8px;
+}
+
+/* Buttons - Mindful Design Branded */
+.mindfulseo-dashboard .button-primary,
+.mindfulseo-settings-wrap .button-primary,
+.mindfulseo-keywords-wrap .button-primary,
+.mindfulseo-guidelines-wrap .button-primary {
+    background: var(--mindful-gold-medium) !important;
+    border-color: var(--mindful-gold-medium) !important;
+    color: #fff !important;
+    text-shadow: none !important;
+    box-shadow: none !important;
+}
+
+.mindfulseo-dashboard .button-primary:hover,
+.mindfulseo-dashboard .button-primary:focus,
+.mindfulseo-settings-wrap .button-primary:hover,
+.mindfulseo-settings-wrap .button-primary:focus,
+.mindfulseo-keywords-wrap .button-primary:hover,
+.mindfulseo-keywords-wrap .button-primary:focus,
+.mindfulseo-guidelines-wrap .button-primary:hover,
+.mindfulseo-guidelines-wrap .button-primary:focus {
+    background: var(--mindful-gold-dark) !important;
+    border-color: var(--mindful-gold-dark) !important;
+}
+
+/* Success/Error Icons */
+.dashicons-yes-alt {
+    color: #46b450;
+}
+
+.dashicons-warning {
+    color: #dc3232;
+}
+
+/* Admin Menu Icon */
+#adminmenu #toplevel_page_mindfulseo .wp-menu-image:before {
+    content: "\f179";
+}
+
+/* Notices */
+.mindfulseo-notice {
+    margin: 15px 0;
+    padding: 15px;
+    border-left: 4px solid var(--mindful-gold-medium);
+    background: var(--mindful-bg-white);
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+
+/* Info Boxes */
+.mindfulseo-info-box {
+    background: var(--mindful-bg-light);
+    border-left: 4px solid var(--mindful-gold-primary);
+    padding: 15px;
+    margin: 20px 0;
+    border-radius: 4px;
+}
+
+.mindfulseo-info-box p {
+    color: #50575e;
+    margin: 0;
+}
+
+/* Loading State */
+.mindfulseo-loading {
+    text-align: center;
+    padding: 40px;
+    color: #646970;
+}
+
+.mindfulseo-loading:before {
+    content: "\f463";
+    font-family: dashicons;
+    font-size: 40px;
+    display: block;
+    animation: spin 2s linear infinite;
+    color: var(--mindful-gold-medium);
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Empty State */
+.mindfulseo-empty-state {
+    text-align: center;
+    padding: 60px 40px;
+    color: #646970;
+}
+
+.mindfulseo-empty-state p {
+    font-size: 16px;
+    margin-bottom: 20px;
+    color: #50575e;
+}
+
+/* Tables */
+.mindfulseo-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0;
+    background: #fff;
+}
+
+.mindfulseo-table th,
+.mindfulseo-table td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.mindfulseo-table th {
+    background: #f6f7f7;
+    font-weight: 600;
+    color: #2c3338;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    padding: 10px 8px;
+}
+
+.mindfulseo-table th.sortable-column {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 24px;
+    transition: background-color 0.15s ease;
+}
+
+.mindfulseo-table th.sortable-column:hover {
+    background: #ecedef;
+}
+
+.mindfulseo-table th.sortable-column::after {
+    content: '\f156';
+    font-family: dashicons;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 14px;
+    opacity: 0.3;
+    transition: opacity 0.15s ease;
+}
+
+.mindfulseo-table th.sortable-column:hover::after {
+    opacity: 0.6;
+}
+
+.mindfulseo-table th.sortable-column.sorted-asc::after {
+    content: '\f142';
+    opacity: 1;
+    color: var(--mindful-gold-dark);
+}
+
+.mindfulseo-table th.sortable-column.sorted-desc::after {
+    content: '\f140';
+    opacity: 1;
+    color: var(--mindful-gold-dark);
+}
+
+.mindfulseo-table td {
+    color: #50575e;
+    font-size: 13px;
+    padding: 10px 8px;
+}
+
+/* Specific column width optimizations */
+.mindfulseo-table th.column-select,
+.mindfulseo-table td.column-select {
+    width: 40px;
+    padding: 10px 8px;
+}
+
+.mindfulseo-table th.column-post-title {
+    min-width: 180px;
+}
+
+.mindfulseo-table th.column-current-keyword {
+    min-width: 120px;
+}
+
+.mindfulseo-table th.column-search-volume,
+.mindfulseo-table th.column-difficulty,
+.mindfulseo-table th.column-seo-score {
+    min-width: 80px;
+}
+
+.mindfulseo-table th.column-seo-title,
+.mindfulseo-table th.column-meta-description {
+    min-width: 140px;
+}
+
+.mindfulseo-table th.column-slug {
+    min-width: 110px;
+}
+
+.mindfulseo-table th.column-type,
+.mindfulseo-table th.column-status {
+    min-width: 80px;
+}
+
+.mindfulseo-table th.column-optimization {
+    min-width: 100px;
+}
+
+.mindfulseo-table th.column-actions {
+    min-width: 90px;
+}
+
+.mindfulseo-table .metric-cell {
+    text-align: center;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.mindfulseo-difficulty-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 38px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    background: #ececec;
+    color: #2c3338;
+}
+
+.mindfulseo-difficulty-badge.difficulty-easy {
+    background: #e2f7ed;
+    color: #116149;
+}
+
+.mindfulseo-difficulty-badge.difficulty-medium {
+    background: #fff4d8;
+    color: #8a5a00;
+}
+
+.mindfulseo-difficulty-badge.difficulty-hard {
+    background: #fde4e4;
+    color: #9b1b1b;
+}
+
+/* Rank badges */
+.mindfulseo-rank-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 42px;
+    padding: 3px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    background: #ececec;
+    color: #666;
+}
+
+.mindfulseo-rank-badge.rank-top3 {
+    background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+    color: #8a5a00;
+    box-shadow: 0 2px 4px rgba(255, 215, 0, 0.3);
+}
+
+.mindfulseo-rank-badge.rank-top10 {
+    background: #e2f7ed;
+    color: #116149;
+    border: 1px solid #b7e4d3;
+}
+
+.mindfulseo-rank-badge.rank-top20 {
+    background: #fff4d8;
+    color: #8a5a00;
+    border: 1px solid #ffeb99;
+}
+
+.mindfulseo-rank-badge.rank-low {
+    background: #fde4e4;
+    color: #9b1b1b;
+    border: 1px solid #fcc4c4;
+}
+
+.mindfulseo-table .column-hidden {
+    display: none !important;
+}
+
+.mindfulseo-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background: #fff;
+    margin-top: 10px;
+}
+
+.mindfulseo-table-scroll table {
+    min-width: 1300px;
+}
+
+.mindfulseo-table tr:hover {
+    background: #fafafa;
+}
+
+/* Form Elements */
+input[type="text"],
+input[type="password"],
+input[type="number"],
+textarea,
+select {
+    border-color: #c3c4c7;
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+textarea:focus,
+select:focus {
+    border-color: var(--mindful-gold-medium);
+    box-shadow: 0 0 0 1px var(--mindful-gold-medium);
+}
+
+/* Responsive */
+@media (max-width: 782px) {
+    .mindfulseo-welcome-panel,
+    .mindfulseo-status-panel,
+    .mindfulseo-settings-wrap {
+        padding: 20px;
+    }
+    
+    .mindfulseo-stats-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .welcome-panel-column-container {
+        flex-direction: column;
+    }
+}
+
+/* WordPress Core Overrides for Better Integration */
+.wrap h1 {
+    font-size: 32px;
+    font-weight: 700;
+    color: #1d2327;
+}
+
+.wrap p {
+    color: #50575e;
+}
+
+/* Links - Mindful Design */
+.mindfulseo-dashboard a,
+.mindfulseo-settings-wrap a,
+.mindfulseo-keywords-wrap a,
+.mindfulseo-guidelines-wrap a {
+    color: var(--mindful-gold-dark);
+}
+
+.mindfulseo-dashboard a:hover,
+.mindfulseo-dashboard a:focus,
+.mindfulseo-settings-wrap a:hover,
+.mindfulseo-settings-wrap a:focus,
+.mindfulseo-keywords-wrap a:hover,
+.mindfulseo-keywords-wrap a:focus,
+.mindfulseo-guidelines-wrap a:hover,
+.mindfulseo-guidelines-wrap a:focus {
+    color: var(--mindful-gold-medium);
+}
+
+.mindfulseo-table-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 20px 0 10px 0;
+    flex-wrap: wrap;
+}
+
+.mindfulseo-table-actions-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    margin-left: auto;
+}
+
+.mindfulseo-table-actions-right .selected-count {
+    font-size: 13px;
+    color: #2c3338;
+    font-weight: 500;
+}
+
+.mindfulseo-table-actions-right .selected-count strong {
+    font-weight: 700;
+    margin-right: 4px;
+}
+
+.mindfulseo-column-controls {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mindfulseo-column-controls {
+    margin: 0;
+}
+
+.mindfulseo-column-controls .column-toggle-button .dashicons {
+    margin-right: 4px;
+}
+
+.mindfulseo-column-controls .column-toggle-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    right: auto;
+    display: none;
+    padding: 14px 16px;
+    background: #fff;
+    border: 1px solid #dcdcde;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(18, 21, 26, 0.12);
+    min-width: 220px;
+    z-index: 25;
+}
+
+.mindfulseo-column-controls.is-open .column-toggle-panel {
+    display: block;
+}
+
+.mindfulseo-column-controls .column-toggle-heading {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #2c3338;
+}
+
+.mindfulseo-column-controls .column-toggle-options {
+    margin: 0;
+    padding: 0;
+}
+
+.mindfulseo-column-controls label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    margin: 4px 0;
+    cursor: grab;
+    color: #2c3338;
+}
+
+.mindfulseo-column-controls input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+}
+
+/* ========================================
+   FILTERS & BULK ACTIONS
+   ======================================== */
+
+.mindfulseo-filters {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding: 12px 20px;
+    background: var(--mindful-bg-light);
+    border: 1px solid var(--mindful-border);
+    border-radius: 4px;
+    flex-wrap: wrap;
+}
+
+.mindfulseo-filters .filter-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+}
+
+.mindfulseo-filters label {
+    font-size: 13px;
+    font-weight: 500;
+    margin: 0;
+    color: var(--mindful-text-dark);
+    white-space: nowrap;
+}
+
+.mindfulseo-filters select,
+.mindfulseo-filters input[type="text"],
+.mindfulseo-filters input[type="search"] {
+    font-size: 13px !important;
+    padding: 4px 8px !important;
+    height: auto !important;
+    line-height: normal !important;
+    min-height: 28px !important;
+    max-width: 180px;
+    margin: 0 !important;
+}
+
+.mindfulseo-filters .button {
+    font-size: 13px !important;
+    padding: 4px 12px !important;
+    height: auto !important;
+    line-height: normal !important;
+    min-height: 28px !important;
+    margin: 0 !important;
+}
+
+.mindfulseo-bulk-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background: #f9f9f9;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin-bottom: 20px;
+}
+
+.bulk-selection {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.bulk-selection label {
+    margin: 0;
+    font-weight: 600;
+}
+
+.selected-count {
+    font-size: 14px;
+    color: #666;
+}
+
+.selected-count strong {
+    color: var(--mindful-gold-dark);
+    font-size: 16px;
+}
+
+/* ========================================
+   INLINE EDITING STYLES
+   ======================================== */
+
+/* Contenteditable fields */
+.editable[contenteditable="true"] {
+    padding: 6px 10px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    cursor: text;
+    min-width: 80px;
+    display: block;
+    background-color: transparent;
+}
+
+.editable[contenteditable="true"]:hover {
+    border-color: var(--mindful-gold-medium);
+    background-color: #fdfaf5;
+}
+
+.editable[contenteditable="true"]:focus {
+    outline: none;
+    border-color: var(--mindful-gold-medium);
+    background-color: var(--mindful-bg-white);
+    box-shadow: 0 0 0 2px rgba(184, 160, 100, 0.1);
+}
+
+/* Editable select dropdowns */
+.editable-select {
+    padding: 6px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    background-color: #fff;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    width: 100%;
+}
+
+.editable-select:hover {
+    border-color: var(--mindful-gold-medium);
+    background-color: #fdfaf5;
+}
+
+.editable-select:focus {
+    outline: none;
+    border-color: var(--mindful-gold-medium);
+    box-shadow: 0 0 0 2px rgba(184, 160, 100, 0.1);
+}
+
+/* Table cell editable fields need block display */
+td .editable[contenteditable="true"] {
+    display: block;
+    width: 100%;
+}
+
+td .editable-select {
+    display: block;
+    width: 100%;
+    max-width: 200px;
+}
+
+/* ========================================
+   TABLE SORTING
+   ======================================== */
+
+.sortable {
+    user-select: none;
+    transition: background-color 0.2s;
+}
+
+.sortable:hover {
+    background-color: #f0f0f1;
+}
+
+.sortable .dashicons {
+    opacity: 0.3;
+    transition: opacity 0.2s;
+}
+
+.sortable:hover .dashicons {
+    opacity: 0.6;
+}
+
+.sortable.sorted-asc .dashicons,
+.sortable.sorted-desc .dashicons {
+    opacity: 1;
+    color: var(--mindful-gold-medium);
+}

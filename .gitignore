@@ -1,0 +1,49 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Node modules (if using build tools)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Composer
+vendor/
+composer.lock
+
+# Build artifacts
+*.map
+*.min.css.map
+*.min.js.map
+
+# WordPress uploads (plugin-specific)
+uploads/
+
+# Local development
+*.local
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~
+
+# Test files (keep test-data/ for examples)
+phpunit.xml
+.phpunit.result.cache
+
+# Package files
+*.zip
+*.tar.gz
