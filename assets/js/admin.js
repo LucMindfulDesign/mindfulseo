@@ -264,6 +264,12 @@
     // Handle contenteditable fields (blur = save)
     $(document).on('blur', '.editable[contenteditable="true"]', function() {
         var $this = $(this);
+        // Batch Optimizer: same .editable selector but post-level saves use batch-optimizer.js
+        // (mindfulseo_update_post_seo). Without this guard, id is missing → guideline AJAX with id 0
+        // → "Invalid request", and data('original') is unset → spurious saves on every focus/blur.
+        if ($this.closest('.mindfulseo-posts-table-wrap').length) {
+            return;
+        }
         var id = $this.data('id');
         var field = $this.data('field');
         var originalValue = $this.data('original');
@@ -297,6 +303,12 @@
             field: field,
             value: newValue
         };
+
+        // Parent row primary keyword edit: send all group row IDs for batch update
+        var groupIds = $this.data('group-ids');
+        if (groupIds && field === 'primary_keyword') {
+            data.group_ids = String(groupIds);
+        }
         
         $.post(mindfulseoAdmin.ajaxurl, data, function(response) {
             $this.css('opacity', '1');
@@ -367,8 +379,11 @@
         });
     });
     
-    // Enter key = save and blur
+    // Enter key = save and blur (keywords / guidelines only — batch table uses batch-optimizer.js)
     $(document).on('keydown', '.editable[contenteditable="true"]', function(e) {
+        if ($(this).closest('.mindfulseo-posts-table-wrap').length) {
+            return;
+        }
         if (e.which === 13) { // Enter
             e.preventDefault();
             $(this).blur();
@@ -697,6 +712,200 @@
         });
     });
     
+    // ================================
+    // PROGRESS BAR HELPER
+    // ================================
+    
+    function mfseoShowProgress($form, label) {
+        $form.siblings('.mfseo-ajax-notice').remove();
+        $form.find('.mfseo-progress-wrap').remove();
+        
+        var html = '<div class="mfseo-progress-wrap" style="margin:15px 0;padding:16px 20px;background:#f0f6fc;border:1px solid #c3d4e6;border-radius:6px;">' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">' +
+                '<div style="display:flex;align-items:center;gap:8px;">' +
+                    '<span class="dashicons dashicons-update mfseo-spin" style="color:#2271b1;"></span>' +
+                    '<strong class="mfseo-progress-label" style="color:#1d2327;">' + label + '</strong>' +
+                '</div>' +
+                '<span class="mfseo-progress-timer" style="color:#646970;font-size:12px;">0s elapsed</span>' +
+            '</div>' +
+            '<div style="background:#dde6ef;border-radius:4px;height:6px;overflow:hidden;">' +
+                '<div class="mfseo-progress-bar-inner" style="width:0%;height:100%;background:linear-gradient(90deg,#2271b1,#72aee6);border-radius:4px;transition:width 0.5s ease;"></div>' +
+            '</div>' +
+            '<p class="mfseo-progress-status" style="margin:8px 0 0;font-size:12px;color:#646970;">Sending request to AI\u2026</p>' +
+        '</div>';
+        
+        $form.find('.submit').before(html);
+        
+        var startTime = Date.now();
+        var steps = [
+            { at: 2, pct: 10, msg: 'Gathering content from your posts\u2026' },
+            { at: 5, pct: 20, msg: 'Building analysis prompt\u2026' },
+            { at: 10, pct: 30, msg: 'Waiting for AI response\u2026' },
+            { at: 20, pct: 45, msg: 'AI is analyzing your content\u2026' },
+            { at: 35, pct: 55, msg: 'Still processing \u2014 complex content takes longer\u2026' },
+            { at: 50, pct: 65, msg: 'Almost there\u2026' },
+            { at: 75, pct: 75, msg: 'Large sites take a bit longer\u2026' },
+            { at: 100, pct: 80, msg: 'Waiting for final AI response\u2026' }
+        ];
+        var stepIndex = 0;
+        
+        var timer = setInterval(function() {
+            var elapsed = Math.floor((Date.now() - startTime) / 1000);
+            $form.find('.mfseo-progress-timer').text(elapsed + 's elapsed');
+            
+            if (stepIndex < steps.length && elapsed >= steps[stepIndex].at) {
+                $form.find('.mfseo-progress-bar-inner').css('width', steps[stepIndex].pct + '%');
+                $form.find('.mfseo-progress-status').text(steps[stepIndex].msg);
+                stepIndex++;
+            }
+        }, 1000);
+        
+        return {
+            complete: function(success, message) {
+                clearInterval(timer);
+                $form.find('.mfseo-progress-bar-inner').css('width', '100%');
+                $form.find('.mfseo-progress-label').text(success ? 'Complete!' : 'Error');
+                $form.find('.mfseo-progress-status').text(message);
+                $form.find('.dashicons-update').removeClass('dashicons-update mfseo-spin')
+                    .addClass(success ? 'dashicons-yes-alt' : 'dashicons-warning')
+                    .css('color', success ? '#46b450' : '#dc3232');
+                $form.find('.mfseo-progress-wrap').css({
+                    background: success ? '#f0faf0' : '#fef0f0',
+                    borderColor: success ? '#b5ddb5' : '#e6b5b5'
+                });
+            },
+            error: function(message) {
+                clearInterval(timer);
+                $form.find('.mfseo-progress-bar-inner').css({ width: '100%', background: '#dc3232' });
+                $form.find('.mfseo-progress-label').text('Error');
+                $form.find('.mfseo-progress-status').text(message);
+                $form.find('.dashicons-update').removeClass('dashicons-update mfseo-spin')
+                    .addClass('dashicons-warning').css('color', '#dc3232');
+                $form.find('.mfseo-progress-wrap').css({ background: '#fef0f0', borderColor: '#e6b5b5' });
+            }
+        };
+    }
+    
+    // ================================
+    // AUTO-GENERATE KEYWORDS VIA AJAX
+    // ================================
+    
+    $('#autogenerate-keywords-form').on('submit', function(e) {
+        e.preventDefault();
+        
+        var $form = $(this);
+        var $btn = $form.find('#mfseo-autogen-keywords-btn');
+        var originalHtml = $btn.html();
+        
+        var postTypes = [];
+        $form.find('input[name="analyze_post_types[]"]:checked').each(function() {
+            postTypes.push($(this).val());
+        });
+        var limit = $form.find('#analyze_limit').val() || 50;
+        var deepAnalysis = $form.find('#deep_analysis').is(':checked') ? 1 : 0;
+        
+        if (postTypes.length === 0) {
+            alert('Please select at least one content type to analyze.');
+            return;
+        }
+        
+        $btn.prop('disabled', true).html(
+            '<span class="dashicons dashicons-update mfseo-spin" style="vertical-align:middle;margin-right:4px;"></span> Analyzing\u2026'
+        );
+        
+        var progress = mfseoShowProgress($form, 'Generating Keywords with AI');
+        
+        $.ajax({
+            url: mindfulseoAdmin.ajaxurl,
+            method: 'POST',
+            timeout: deepAnalysis ? 300000 : 180000,
+            data: {
+                action: 'mindfulseo_autogenerate_keywords',
+                nonce: mindfulseoAdmin.nonces.autogenerate,
+                post_types: postTypes,
+                limit: limit,
+                deep_analysis: deepAnalysis
+            },
+            success: function(response) {
+                if (response.success) {
+                    progress.complete(true, response.data.message);
+                    if (response.data.imported > 0) {
+                        setTimeout(function() { location.reload(); }, 2500);
+                    }
+                } else {
+                    progress.complete(false, response.data && response.data.message ? response.data.message : 'An unknown error occurred.');
+                }
+                $btn.prop('disabled', false).html(originalHtml);
+            },
+            error: function(xhr, status) {
+                var msg = status === 'timeout'
+                    ? 'The request timed out. Try reducing the number of posts to analyze.'
+                    : 'A network error occurred. Please try again.';
+                progress.error(msg);
+                $btn.prop('disabled', false).html(originalHtml);
+            }
+        });
+    });
+    
+    // ====================================
+    // AUTO-GENERATE GUIDELINES VIA AJAX
+    // ====================================
+    
+    $('#autogenerate-guidelines-form').on('submit', function(e) {
+        e.preventDefault();
+        
+        var $form = $(this);
+        var $btn = $form.find('#mfseo-autogen-guidelines-btn');
+        var originalHtml = $btn.html();
+        
+        var postTypes = [];
+        $form.find('input[name="analyze_guideline_post_types[]"]:checked').each(function() {
+            postTypes.push($(this).val());
+        });
+        var limit = $form.find('#analyze_guideline_limit').val() || 100;
+        
+        if (postTypes.length === 0) {
+            alert('Please select at least one content type to analyze.');
+            return;
+        }
+        
+        $btn.prop('disabled', true).html(
+            '<span class="dashicons dashicons-update mfseo-spin" style="vertical-align:middle;margin-right:4px;"></span> Analyzing\u2026'
+        );
+        
+        var progress = mfseoShowProgress($form, 'Generating Guidelines with AI');
+        
+        $.ajax({
+            url: mindfulseoAdmin.ajaxurl,
+            method: 'POST',
+            timeout: 180000,
+            data: {
+                action: 'mindfulseo_autogenerate_guidelines',
+                nonce: mindfulseoAdmin.nonces.autogenerate,
+                post_types: postTypes,
+                limit: limit
+            },
+            success: function(response) {
+                if (response.success) {
+                    progress.complete(true, response.data.message);
+                    if (response.data.imported > 0) {
+                        setTimeout(function() { location.reload(); }, 2500);
+                    }
+                } else {
+                    progress.complete(false, response.data && response.data.message ? response.data.message : 'An unknown error occurred.');
+                }
+                $btn.prop('disabled', false).html(originalHtml);
+            },
+            error: function(xhr, status) {
+                var msg = status === 'timeout'
+                    ? 'The request timed out. Try reducing the number of posts to analyze.'
+                    : 'A network error occurred. Please try again.';
+                progress.error(msg);
+                $btn.prop('disabled', false).html(originalHtml);
+            }
+        });
+    });
+    
     // ===================
     // DELETE ALL KEYWORDS
     // ===================
@@ -790,6 +999,7 @@
             $('#mindfulseo-guidelines-delete-confirm').on('click', function() {
                 console.log('MindfulSEO: Guidelines delete confirmed');
                 $('#mindfulseo-guidelines-delete-confirm-dialog, #mindfulseo-guidelines-delete-overlay').remove();
+                $form.append('<input type="hidden" name="mindfulseo_delete_all_guidelines" value="1">');
                 guidelinesDeleteConfirmed = true;
                 $form.submit();
             });
@@ -940,7 +1150,20 @@
     });
     
     // ===================
-    // TABLE SORTING
+    // KEYWORD TABLE TOGGLE (expand/collapse longtails)
+    // ===================
+
+    $(document).on('click', '.mfseo-kw-toggle', function(e) {
+        e.stopPropagation();
+        var $toggle = $(this);
+        var group = $toggle.closest('tr').data('group');
+        var $children = $('tr.mfseo-kw-child[data-group="' + group + '"]');
+        $children.toggle();
+        $toggle.toggleClass('mfseo-expanded');
+    });
+
+    // ===================
+    // TABLE SORTING (groups-aware)
     // ===================
     
     $('.sortable').on('click', function() {
@@ -949,80 +1172,80 @@
         var $tbody = $table.find('tbody');
         var sortBy = $th.data('sort');
         var isAscending = !$th.hasClass('sorted-asc');
+        var isGroupedTable = $table.hasClass('mfseo-keyword-table');
         
-        // Determine if this is a numeric column
         var isNumericColumn = ['search_volume', 'keyword_difficulty', 'cpc', 'volume', 'difficulty'].indexOf(sortBy) !== -1;
         
-        // Remove sort indicators from all headers
         $table.find('.sortable').removeClass('sorted-asc sorted-desc');
         $table.find('.sortable .dashicons').removeClass('dashicons-arrow-up dashicons-arrow-down').addClass('dashicons-sort');
-        
-        // Add sort indicator to clicked header
         $th.addClass(isAscending ? 'sorted-asc' : 'sorted-desc');
         $th.find('.dashicons').removeClass('dashicons-sort').addClass(isAscending ? 'dashicons-arrow-up' : 'dashicons-arrow-down');
         
-        // Get all rows
-        var $rows = $tbody.find('tr').get();
+        // For grouped keyword tables, only sort parent rows; children follow their parent
+        var $rows;
+        if (isGroupedTable) {
+            $rows = $tbody.find('tr.mfseo-kw-parent').get();
+        } else {
+            $rows = $tbody.find('tr').get();
+        }
         
-        // Sort rows
         $rows.sort(function(a, b) {
             var $cellA = $(a).find('td').eq($th.index());
             var $cellB = $(b).find('td').eq($th.index());
             
             var valA, valB;
             
-            // Check if cells have data-sort-value attribute (for Keywords Strategy table)
             if ($cellA.attr('data-sort-value') !== undefined && $cellB.attr('data-sort-value') !== undefined) {
                 valA = $cellA.attr('data-sort-value');
                 valB = $cellB.attr('data-sort-value');
-            }
-            // Handle different cell types
-            else if ($cellA.find('select').length) {
-                // Dropdown select
+            } else if ($cellA.find('select').length) {
                 valA = $cellA.find('select').val();
                 valB = $cellB.find('select').val();
             } else if ($cellA.find('.editable').length) {
-                // Editable span
                 valA = $cellA.find('.editable').text();
                 valB = $cellB.find('.editable').text();
             } else {
-                // Plain text
                 valA = $cellA.text();
                 valB = $cellB.text();
             }
             
-            // Trim values
-            valA = valA.trim();
-            valB = valB.trim();
+            valA = (valA || '').trim();
+            valB = (valB || '').trim();
             
-            // Handle numeric sorting
             if (isNumericColumn) {
-                // Convert "—" and empty strings to -1 for numeric columns (so they sort to bottom)
                 var numA = (valA === '—' || valA === '' || valA === '-') ? -1 : parseFloat(valA.replace(/[^0-9.-]/g, ''));
                 var numB = (valB === '—' || valB === '' || valB === '-') ? -1 : parseFloat(valB.replace(/[^0-9.-]/g, ''));
-                
-                // Handle NaN values
                 numA = isNaN(numA) ? -1 : numA;
                 numB = isNaN(numB) ? -1 : numB;
-                
                 if (numA < numB) return isAscending ? -1 : 1;
                 if (numA > numB) return isAscending ? 1 : -1;
                 return 0;
             }
             
-            // Text sorting (case-insensitive)
             valA = valA.toLowerCase();
             valB = valB.toLowerCase();
-            
             if (valA < valB) return isAscending ? -1 : 1;
             if (valA > valB) return isAscending ? 1 : -1;
             return 0;
         });
         
-        // Reorder rows in DOM
-        $.each($rows, function(index, row) {
-            $tbody.append(row);
-        });
+        // Reorder: append each parent, then its children immediately after
+        if (isGroupedTable) {
+            var $allChildren = $tbody.find('tr.mfseo-kw-child').detach();
+            $.each($rows, function(index, row) {
+                $tbody.append(row);
+                var group = $(row).data('group');
+                if (group) {
+                    $allChildren.filter('[data-group="' + group + '"]').each(function() {
+                        $tbody.append(this);
+                    });
+                }
+            });
+        } else {
+            $.each($rows, function(index, row) {
+                $tbody.append(row);
+            });
+        }
     });
     
     // ================================================
@@ -1046,11 +1269,11 @@
         $button.prop('disabled', true).html('<span class="dashicons dashicons-update dashicons-spin"></span> Saving...');
         
         $.ajax({
-            url: mindfulseo.ajaxurl,
+            url: mindfulseoAdmin.ajaxurl,
             type: 'POST',
             data: {
                 action: 'mindfulseo_save_custom_prompt',
-                nonce: mindfulseo.nonce,
+                nonce: mindfulseoAdmin.nonces.ajax_nonce,
                 prompt_type: promptType,
                 prompt_value: promptValue
             },
@@ -1087,29 +1310,34 @@
         }
         
         $button.prop('disabled', true).html('<span class="dashicons dashicons-update dashicons-spin"></span> Resetting...');
-        
+
+        const resetBtnHtml = '<span class="dashicons dashicons-update"></span> Reset to Default';
+
         $.ajax({
-            url: mindfulseo.ajaxurl,
+            url: mindfulseoAdmin.ajaxurl,
             type: 'POST',
             data: {
                 action: 'mindfulseo_save_custom_prompt',
-                nonce: mindfulseo.nonce,
+                nonce: mindfulseoAdmin.nonces.ajax_nonce,
                 prompt_type: promptType,
                 prompt_value: ''
             },
             success: function(response) {
                 if (response.success) {
-                    $textarea.val('');
+                    if ($textarea && $textarea.length) {
+                        $textarea.val('');
+                    }
                     alert('Prompt reset to default successfully!');
-                    $button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> Reset to Default');
                 } else {
-                    alert('Error resetting prompt: ' + response.data.message);
-                    $button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> Reset to Default');
+                    var errMsg = (response.data && response.data.message) ? response.data.message : (response.data || 'Unknown error');
+                    alert('Error resetting prompt: ' + errMsg);
                 }
             },
             error: function() {
                 alert('Error resetting prompt. Please try again.');
-                $button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> Reset to Default');
+            },
+            complete: function() {
+                $button.prop('disabled', false).html(resetBtnHtml);
             }
         });
     });

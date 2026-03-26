@@ -19,11 +19,77 @@ class MFSEO_Content_Analyzer {
      */
     private $supported_post_types = array();
     
+    private $detected_entities = array();
+
+    /**
+     * avoid => preferred pairs for keyword sanitization (longest avoid first).
+     *
+     * @var array<int, array{avoid:string, preferred:string}>
+     */
+    private $keyword_avoid_replace_pairs = array();
+
+    /**
+     * Lowercase => correctly capitalized form from guideline capitalize rules.
+     *
+     * @var array<string, string>
+     */
+    private $guideline_capitalize_terms_map = array();
+
+    /** @var list<string> */
+    private $keyword_avoid_terms_lower = array();
+
     /**
      * Constructor
      */
     public function __construct() {
         $this->supported_post_types = $this->get_supported_post_types();
+    }
+
+    /**
+     * Bound prompt text so outbound HTTP requests stay under server/cURL limits (e.g. cURL error 100).
+     *
+     * @param string $text      Text.
+     * @param int    $max_chars Max characters (UTF-8 when mbstring available).
+     * @return string
+     */
+    private function truncate_for_ai_prompt( $text, $max_chars = 12000 ) {
+        if ( $text === '' || $text === null ) {
+            return '';
+        }
+        if ( function_exists( 'mb_strlen' ) && function_exists( 'mb_substr' ) ) {
+            if ( mb_strlen( $text ) <= $max_chars ) {
+                return $text;
+            }
+            return mb_substr( $text, 0, $max_chars ) . "\n\n[Context truncated for API size limits.]";
+        }
+        if ( strlen( $text ) <= $max_chars ) {
+            return $text;
+        }
+        return substr( $text, 0, $max_chars ) . "\n\n[Context truncated for API size limits.]";
+    }
+
+    /**
+     * Build a bounded title list for the keyword prompt (avoids multi‑MB prompts on large sites).
+     *
+     * @param array $titles Post titles.
+     * @return string
+     */
+    private function prepare_titles_for_keyword_prompt( array $titles ) {
+        $slice = array_slice( $titles, 0, 150 );
+        $out   = array();
+        foreach ( $slice as $t ) {
+            $t = trim( (string) $t );
+            if ( $t === '' ) {
+                continue;
+            }
+            if ( function_exists( 'mb_substr' ) ) {
+                $t = mb_substr( $t, 0, 160 );
+            } else {
+                $t = substr( $t, 0, 160 );
+            }
+            $out[] = $t;
+        }
+        return implode( ' | ', $out );
     }
     
     /**
@@ -78,36 +144,174 @@ class MFSEO_Content_Analyzer {
      */
     public function analyze_for_keywords($options = array()) {
         $defaults = array(
-            'post_types' => array('post'),
-            'limit' => 50,
-            'min_word_count' => 300,
-            'use_ai' => true // NEW: Use AI for analysis
+            'post_types' => array('post', 'page'),
+            'min_word_count' => 100,
+            'use_ai' => true,
+            'deep_analysis' => false,
+            'wizard_saved_snapshot' => '',
+            'ai_usage_context' => '',
         );
         
         $options = wp_parse_args($options, $defaults);
         
-        // Get posts
-        $posts = get_posts(array(
+        global $wpdb;
+        $post_type_in = implode("','", array_map('esc_sql', $options['post_types']));
+        $total_post_count = (int) $wpdb->get_var(
+            "SELECT COUNT(*) FROM {$wpdb->posts} 
+             WHERE post_type IN ('{$post_type_in}') 
+             AND post_status = 'publish'"
+        );
+        if ( $total_post_count < 1 ) {
+            return array();
+        }
+        // Representative titles only — loading every title blows memory and entity extraction (7288+ rows).
+        $all_titles = $wpdb->get_col(
+            "SELECT post_title FROM {$wpdb->posts} 
+             WHERE post_type IN ('{$post_type_in}') 
+             AND post_status = 'publish' 
+             ORDER BY post_modified DESC
+             LIMIT 400"
+        );
+        $options['total_post_count'] = $total_post_count;
+        
+        if (empty($all_titles)) {
+            return array();
+        }
+        
+        $sample_posts = get_posts(array(
             'post_type' => $options['post_types'],
-            'posts_per_page' => $options['limit'],
+            'posts_per_page' => 60,
             'post_status' => 'publish',
             'orderby' => 'date',
             'order' => 'DESC'
         ));
         
-        if (empty($posts)) {
-            return array();
-        }
-        
-        // NEW: Use AI-enhanced analysis if enabled
         if ($options['use_ai']) {
-            return $this->ai_generate_keywords($posts, $options);
+            return $this->ai_generate_keywords($sample_posts, $options, $all_titles);
         }
         
-        // FALLBACK: Original pattern-based analysis
-        return $this->pattern_based_keywords($posts, $options);
+        return $this->pattern_based_keywords($sample_posts, $options);
     }
-    
+
+    /**
+     * Load keyword strategy + active guidelines for keyword AI prompt and post-filtering.
+     */
+    private function load_keyword_strategy_and_guidelines_for_prompt() {
+        $this->keyword_avoid_replace_pairs = array();
+        $this->guideline_capitalize_terms_map = array();
+        $this->keyword_avoid_terms_lower = array();
+
+        $primary_keywords = array();
+        if (class_exists('MFSEO_Keyword_Manager')) {
+            $km = MFSEO_Keyword_Manager::get_instance();
+            $keywords = $km->get_keywords(array('limit' => 500));
+            $seen = array();
+            foreach ($keywords as $kw) {
+                $pk = trim($kw->primary_keyword);
+                if ($pk === '') {
+                    continue;
+                }
+                $k = strtolower($pk);
+                if (!isset($seen[$k])) {
+                    $primary_keywords[] = $pk;
+                    $seen[$k] = true;
+                }
+            }
+        }
+
+        $guidelines_block = '';
+        $pair_map = array();
+
+        if (class_exists('MFSEO_Guidelines_Engine')) {
+            $ge = MFSEO_Guidelines_Engine::get_instance();
+            $guidelines_block = $ge->generate_ai_context();
+            $rules = $ge->get_all_rules(array('active_only' => true));
+            foreach ($rules as $rule) {
+                if ($rule->rule_type === 'capitalize' && !empty($rule->preferred_term)) {
+                    $this->guideline_capitalize_terms_map[strtolower($rule->preferred_term)] = $rule->preferred_term;
+                }
+                if (in_array($rule->rule_type, array('avoid_term', 'preferred_term', 'seo_friendly'), true)
+                    && !empty($rule->avoid_term)
+                    && !empty($rule->preferred_term)) {
+                    $pair_map[strtolower($rule->avoid_term)] = array(
+                        'avoid' => $rule->avoid_term,
+                        'preferred' => $rule->preferred_term,
+                    );
+                }
+                if ($rule->rule_type === 'avoid_term' && !empty($rule->avoid_term)) {
+                    $this->keyword_avoid_terms_lower[] = strtolower($rule->avoid_term);
+                }
+                if ($rule->rule_type === 'preferred_term' && !empty($rule->avoid_term)) {
+                    $this->keyword_avoid_terms_lower[] = strtolower($rule->avoid_term);
+                }
+                if ($rule->rule_type === 'seo_friendly' && !empty($rule->avoid_term)) {
+                    $this->keyword_avoid_terms_lower[] = strtolower($rule->avoid_term);
+                }
+            }
+        }
+
+        foreach ($pair_map as $pair) {
+            $this->keyword_avoid_replace_pairs[] = $pair;
+        }
+        usort($this->keyword_avoid_replace_pairs, function ($a, $b) {
+            return strlen($b['avoid']) - strlen($a['avoid']);
+        });
+        $this->keyword_avoid_terms_lower = array_values(array_unique($this->keyword_avoid_terms_lower));
+
+        return array(
+            'primary_keywords' => $primary_keywords,
+            'guidelines_block' => $guidelines_block,
+        );
+    }
+
+    /**
+     * Apply avoid→preferred replacements for keyword phrases (word boundaries).
+     *
+     * @param string $phrase Phrase.
+     * @return string
+     */
+    private function apply_keyword_avoid_replacements($phrase) {
+        $out = $phrase;
+        foreach ($this->keyword_avoid_replace_pairs as $pair) {
+            $pattern = '/\b' . preg_quote($pair['avoid'], '/') . '\b/iu';
+            $out = preg_replace($pattern, $pair['preferred'], $out);
+        }
+        return $out;
+    }
+
+    /**
+     * True if phrase still contains any forbidden avoid term (after replacements).
+     *
+     * @param string $phrase Phrase.
+     * @return bool
+     */
+    private function keyword_phrase_contains_avoid_term($phrase) {
+        foreach ($this->keyword_avoid_terms_lower as $avoid_l) {
+            $avoid = preg_quote($avoid_l, '/');
+            if (preg_match('/\b' . $avoid . '\b/iu', $phrase)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Apply guideline capitalization map (merge with detected entities in fix_keyword_capitalization).
+     *
+     * @param string $keyword Keyword.
+     * @return string
+     */
+    private function sanitize_keyword_phrase_with_guidelines($keyword) {
+        if ($keyword === '' || $keyword === null) {
+            return null;
+        }
+        $adjusted = $this->apply_keyword_avoid_replacements($keyword);
+        if ($this->keyword_phrase_contains_avoid_term($adjusted)) {
+            return null;
+        }
+        return $this->fix_keyword_capitalization($adjusted);
+    }
+
     /**
      * AI-Enhanced keyword generation
      * Analyzes content themes, user intent, and generates high-quality keywords
@@ -116,13 +320,43 @@ class MFSEO_Content_Analyzer {
      * @param array $options Options
      * @return array Generated keywords
      */
-    private function ai_generate_keywords($posts, $options) {
-        // Prepare content samples for AI analysis
+    private function ai_generate_keywords($posts, $options, $all_titles = array()) {
         $content_samples = array();
-        $titles = array();
         $total_word_count = 0;
+        $homepage_content = '';
+        $about_content = '';
+        $deep = !empty($options['deep_analysis']);
+        $max_samples = 25;
+        $excerpt_len = 1000;
+        
+        $front_page_id = get_option('page_on_front');
+        if ($front_page_id) {
+            $fp = get_post($front_page_id);
+            if ($fp && !empty($fp->post_content)) {
+                $homepage_content = substr(wp_strip_all_tags($fp->post_content), 0, 1500);
+            }
+        }
+        
+        $about_page = get_posts(array(
+            'post_type' => 'page',
+            'name' => 'about',
+            'posts_per_page' => 1,
+            'post_status' => 'publish',
+        ));
+        if (empty($about_page)) {
+            $about_page = get_posts(array(
+                'post_type' => 'page',
+                'post_status' => 'publish',
+                's' => 'about',
+                'posts_per_page' => 1,
+            ));
+        }
+        if (!empty($about_page)) {
+            $about_content = substr(wp_strip_all_tags($about_page[0]->post_content), 0, 1500);
+        }
         
         foreach ($posts as $post) {
+            if ($post->ID == $front_page_id) continue;
             $content = wp_strip_all_tags($post->post_content);
             $word_count = str_word_count($content);
             
@@ -130,54 +364,57 @@ class MFSEO_Content_Analyzer {
                 continue;
             }
             
-            // Take excerpt (first 500 chars to keep prompt size reasonable)
-            $excerpt = substr($content, 0, 500);
-            
             $content_samples[] = array(
                 'title' => $post->post_title,
-                'excerpt' => $excerpt,
+                'excerpt' => substr($content, 0, $excerpt_len),
                 'word_count' => $word_count
             );
             
-            $titles[] = $post->post_title;
             $total_word_count += $word_count;
             
-            // Limit to 20 samples to keep API cost reasonable
-            if (count($content_samples) >= 20) {
+            if (count($content_samples) >= $max_samples) {
                 break;
             }
         }
         
-        if (empty($content_samples)) {
+        if (empty($content_samples) && empty($homepage_content)) {
             return array();
         }
         
-        // Build AI prompt
-        $prompt = $this->build_keyword_generation_prompt($content_samples, array(
-            'post_count' => count($content_samples),
+        $context = array(
+            'post_count' => isset( $options['total_post_count'] ) ? (int) $options['total_post_count'] : count( $all_titles ),
             'total_word_count' => $total_word_count,
-            'post_types' => $options['post_types']
-        ));
+            'post_types' => $options['post_types'],
+            'all_titles' => $all_titles,
+            'homepage_content' => $homepage_content,
+            'about_content' => $about_content,
+        );
+        if (!empty($options['wizard_saved_snapshot'])) {
+            $context['wizard_saved_snapshot'] = $options['wizard_saved_snapshot'];
+        }
         
-        // Call AI
+        $prompt = $this->build_keyword_generation_prompt($content_samples, $context);
+        
         $ai_connector = MFSEO_AI_Connector::get_instance();
+        $kw_ctx = ! empty( $options['ai_usage_context'] ) ? $options['ai_usage_context'] : 'content_analyzer_keywords';
         $response = $ai_connector->generate_content($prompt, array(
-            'timeout' => 90, // Longer timeout for analysis
-            'temperature' => 0.3 // Lower temperature for more focused analysis
+            'timeout' => $deep ? 180 : 120,
+            'temperature' => 0.3,
+            'max_tokens' => 6000,
+            'fast_model' => !$deep,
+            'usage_context' => $kw_ctx,
         ));
         
         if (is_wp_error($response)) {
             error_log('MindfulSEO Keyword AI Error: ' . $response->get_error_message());
-            // Fall back to pattern-based analysis
-            return $this->pattern_based_keywords($posts, $options);
+            return new WP_Error('ai_failed', 'AI keyword generation failed: ' . $response->get_error_message());
         }
         
-        // Parse AI response
         $keywords = $this->parse_ai_keyword_response($response);
         
         if (empty($keywords)) {
-            error_log('MindfulSEO: AI returned no keywords, falling back to pattern-based');
-            return $this->pattern_based_keywords($posts, $options);
+            error_log('MindfulSEO: AI returned no parseable keywords. Response: ' . substr($response, 0, 500));
+            return new WP_Error('ai_parse_failed', 'AI returned no parseable keywords. Please try again or check your API key.');
         }
         
         return $keywords;
@@ -191,157 +428,144 @@ class MFSEO_Content_Analyzer {
      * @return string Prompt
      */
     private function build_keyword_generation_prompt($samples, $context) {
-        // ==================================
-        // EXTRACT SITE IDENTITY & ENTITIES
-        // ==================================
         $site_name = get_bloginfo('name');
         $site_description = get_bloginfo('description');
         $site_url = get_site_url();
         
-        // Extract key entities from content
-        $entities = $this->extract_site_entities($samples);
+        $all_titles = !empty($context['all_titles']) ? $context['all_titles'] : array();
+        $entities = $this->extract_site_entities($samples, $all_titles);
+        $this->detected_entities = $entities;
+
+        $strategy_ctx = $this->load_keyword_strategy_and_guidelines_for_prompt();
         
-        $prompt = "You are an expert SEO strategist and content analyst specializing in keyword research and search intent identification.\n\n";
+        $all_titles_text = ! empty( $all_titles ) ? $this->prepare_titles_for_keyword_prompt( $all_titles ) : '';
+
+        $prompt = "You are an expert SEO keyword researcher. Analyze this website's ENTIRE content and identify keywords that REAL PEOPLE type into Google to find content like this.\n\n";
         
-        $prompt .= "━━━ YOUR TASK ━━━\n";
-        $prompt .= "Analyze the following content samples from a website and generate a comprehensive keyword strategy.\n";
-        $prompt .= "Focus on identifying WHAT USERS WOULD SEARCH to find this content.\n\n";
-        
-        $prompt .= "━━━ WEBSITE IDENTITY ━━━\n";
-        $prompt .= "Site Name: {$site_name}\n";
+        $prompt .= "=== WEBSITE IDENTITY ===\n";
+        $prompt .= "Name: {$site_name}\n";
         if (!empty($site_description)) {
             $prompt .= "Tagline: {$site_description}\n";
         }
         $prompt .= "URL: {$site_url}\n";
-        
-        // Add extracted entities
+        $prompt .= "Total published posts: {$context['post_count']}\n\n";
+
+        if (!empty($context['wizard_saved_snapshot'])) {
+            $prompt .= "=== PREVIOUS SAVED KEYWORD STRATEGY (from database — IMPROVE: produce a stronger, more complete set; keep useful themes, fix gaps and redundancy) ===\n";
+            $prompt .= $this->truncate_for_ai_prompt( $context['wizard_saved_snapshot'], 12000 ) . "\n\n";
+        }
+
+        if (!empty($context['homepage_content'])) {
+            $prompt .= "=== HOMEPAGE CONTENT (this is what the site is primarily about) ===\n";
+            $prompt .= $context['homepage_content'] . "\n\n";
+        }
+        if (!empty($context['about_content'])) {
+            $prompt .= "=== ABOUT PAGE CONTENT ===\n";
+            $prompt .= $context['about_content'] . "\n\n";
+        }
+
+        $prompt .= "=== DETECTED SITE STRUCTURE ===\n\n";
+
+        if (!empty($entities['key_terms'])) {
+            $acr_parts = array();
+            foreach ($entities['key_terms'] as $acr => $count) {
+                $acr_parts[] = "{$acr} ({$count} mentions)";
+            }
+            $prompt .= "Key Acronyms/Organizations: " . implode(', ', $acr_parts) . "\n";
+        }
+
         if (!empty($entities['people'])) {
-            $prompt .= "\nKey People/Teachers Mentioned:\n";
-            foreach ($entities['people'] as $person) {
-                $prompt .= "  • {$person}\n";
+            $people_parts = array();
+            foreach (array_slice($entities['people'], 0, 20, true) as $name => $count) {
+                $people_parts[] = "{$name} ({$count} mentions)";
             }
+            $prompt .= "Key People (ranked by frequency — the MOST mentioned people are the MOST important to target as keywords):\n";
+            $prompt .= implode(', ', $people_parts) . "\n";
         }
-        
-        if (!empty($entities['locations'])) {
-            $prompt .= "\nLocations:\n";
-            foreach ($entities['locations'] as $location) {
-                $prompt .= "  • {$location}\n";
+
+        if (!empty($entities['categories_with_counts'])) {
+            $cat_parts = array();
+            foreach (array_slice($entities['categories_with_counts'], 0, 20, true) as $cat => $count) {
+                $cat_parts[] = "{$cat} ({$count} posts)";
             }
+            $prompt .= "Site Categories (ranked by post count — these are the site's main content areas):\n";
+            $prompt .= implode(', ', $cat_parts) . "\n";
         }
-        
-        if (!empty($entities['programs'])) {
-            $prompt .= "\nPrograms/Courses/Categories:\n";
-            foreach ($entities['programs'] as $program) {
-                $prompt .= "  • {$program}\n";
+
+        if (!empty($entities['tags_with_counts'])) {
+            $tag_parts = array();
+            foreach (array_slice($entities['tags_with_counts'], 0, 30, true) as $tag => $count) {
+                $tag_parts[] = "{$tag} ({$count} posts)";
             }
+            $prompt .= "Site Tags (ranked by usage — these represent the specific topics readers care about):\n";
+            $prompt .= implode(', ', $tag_parts) . "\n";
         }
-        
-        $prompt .= "\n⚠️ CRITICAL: You MUST include PRIMARY keywords for:\n";
-        $prompt .= "  1. The organization/site itself (\"{$site_name}\" and variations)\n";
-        if (!empty($entities['people'])) {
-            $prompt .= "  2. Key people/teachers listed above (each person should get their own PRIMARY keyword)\n";
+
+        if (!empty($all_titles_text)) {
+            $prompt .= "\nALL POST TITLES (scan for scope):\n";
+            $prompt .= $all_titles_text . "\n";
         }
-        if (!empty($entities['locations'])) {
-            $prompt .= "  3. Location-based variations (e.g., \"{$entities['locations'][0]} + topic\")\n";
-        }
-        $prompt .= "  4. Main content themes (from the samples below)\n\n";
+        $prompt .= "\n";
         
-        $prompt .= "━━━ CONTENT OVERVIEW ━━━\n";
-        $prompt .= "Post Count: {$context['post_count']} posts\n";
-        $prompt .= "Total Words: ~" . number_format($context['total_word_count']) . " words\n";
-        $prompt .= "Content Types: " . implode(', ', $context['post_types']) . "\n\n";
-        
-        $prompt .= "━━━ CONTENT SAMPLES ━━━\n\n";
+        $prompt .= "=== CONTENT SAMPLES (" . count($samples) . " posts) ===\n\n";
         foreach ($samples as $i => $sample) {
-            $prompt .= "Sample " . ($i + 1) . ":\n";
-            $prompt .= "Title: {$sample['title']}\n";
-            $prompt .= "Excerpt: {$sample['excerpt']}\n";
-            $prompt .= "Word Count: {$sample['word_count']}\n\n";
+            $prompt .= ($i + 1) . ". \"{$sample['title']}\"\n   {$sample['excerpt']}\n\n";
         }
+
+        if (!empty($strategy_ctx['primary_keywords'])) {
+            $prompt .= "=== EXISTING KEYWORD STRATEGY (align with these clusters and wording) ===\n";
+            $prompt .= implode(', ', array_slice($strategy_ctx['primary_keywords'], 0, 100)) . "\n\n";
+        }
+
+        if (!empty($strategy_ctx['guidelines_block'])) {
+            $prompt .= "=== AUTHORITATIVE LANGUAGE GUIDELINES (MUST follow for every primary and longtail keyword) ===\n";
+            $prompt .= $this->truncate_for_ai_prompt( $strategy_ctx['guidelines_block'], 10000 ) . "\n";
+        }
+
+        $prompt .= "TERMINOLOGY: Do not target avoided terms as keywords; use the guideline-preferred wording instead.\n\n";
         
-        $prompt .= "━━━ ANALYSIS FRAMEWORK ━━━\n\n";
-        $prompt .= "1. IDENTIFY MAIN THEMES:\n";
-        $prompt .= "   • What are the 3-5 core topics covered across all samples?\n";
-        $prompt .= "   • What subjects or categories do these posts belong to?\n";
-        $prompt .= "   • What expertise or knowledge is being shared?\n\n";
+        $prompt .= "=== KEYWORD GENERATION RULES ===\n\n";
+
+        $prompt .= "Generate 15-20 PRIMARY keywords covering ALL aspects of this site. Quality over quantity.\n\n";
+
+        $prompt .= "MANDATORY CATEGORIES (must have keywords in EACH):\n\n";
+
+        $prompt .= "A) BRAND/ORGANIZATION (1-2 keywords): The main organization name (\"{$site_name}\") and its acronym. HIGH priority.\n\n";
+
+        $prompt .= "B) KEY PEOPLE (1 keyword per prominent person, HIGH priority): The MOST frequently mentioned people MUST be keywords. ";
+        $prompt .= "Use their COMPLETE FULL NAME exactly as detected. NEVER shorten or abbreviate.\n\n";
+
+        $prompt .= "C) CORE TOPICS & PRACTICES (8-12 keywords, mix of HIGH and MEDIUM): The site's main content areas. ";
+        $prompt .= "Use categories, tags, and content samples to identify the key topics people search for. ";
+        $prompt .= "Use the site's actual domain-specific terminology.\n\n";
+
+        $prompt .= "D) LOCATIONS, EVENTS & RESOURCES (2-4 keywords if applicable): Key locations, centers, events, or resource types.\n\n";
         
-        $prompt .= "2. UNDERSTAND USER INTENT:\n";
-        $prompt .= "   • What would someone type into Google to find this content?\n";
-        $prompt .= "   • What questions are users trying to answer?\n";
-        $prompt .= "   • What problems are they trying to solve?\n";
-        $prompt .= "   • What are they trying to learn or accomplish?\n\n";
+        $prompt .= "KEYWORD WATERFALL FORMAT:\n";
+        $prompt .= "- Primary keywords: 1-5 words, Properly Capitalized for proper nouns\n";
+        $prompt .= "- Longtail keywords: 4-6 per primary, each 3-8 words, ALL LOWERCASE\n";
+        $prompt .= "- Longtails should cover different search angles: meaning, how-to, benefits, related concepts\n";
+        $prompt .= "- Each longtail must be a REAL search query people actually type into Google\n";
+        $prompt .= "- Longtails should be genuinely different from each other (not just adding one word)\n\n";
         
-        $prompt .= "3. GENERATE PRIMARY KEYWORDS:\n";
-        $prompt .= "   • Create 15-25 primary keywords (3-5 words each)\n";
-        $prompt .= "   • Use natural language that real people search\n";
-        $prompt .= "   • Focus on medium to high search volume potential\n";
-        $prompt .= "   • Avoid overly broad or overly niche terms\n";
-        $prompt .= "   • Consider semantic variations and synonyms\n";
-        $prompt .= "   • Include question-based keywords when relevant\n\n";
+        $prompt .= "SEARCH INTENT: Informational | Navigational | Transactional | Commercial\n";
+        $prompt .= "PRIORITY: HIGH (core to the site) | MEDIUM (secondary topic) | LOW (tangential)\n\n";
         
-        $prompt .= "4. CREATE LONGTAIL VARIANTS:\n";
-        $prompt .= "   • For EACH primary keyword, generate 2-3 longtail variations\n";
-        $prompt .= "   • Longtails should be 4-7 words\n";
-        $prompt .= "   • Add modifiers like: 'how to', 'best', 'guide', 'for beginners', 'explained'\n";
-        $prompt .= "   • Make them specific and actionable\n";
-        $prompt .= "   • Ensure they're genuinely different from the primary\n\n";
+        $prompt .= "ABSOLUTE RULES:\n";
+        $prompt .= "- NEVER use generic filler words like \"rituals\", \"charitable activities\", \"holy days\", \"community stories\"\n";
+        $prompt .= "- NEVER shorten or cut names — always use the FULL form as it appears in the content\n";
+        $prompt .= "- NEVER combine or merge different people into a single keyword\n";
+        $prompt .= "- NEVER rearrange post titles into keywords\n";
+        $prompt .= "- NEVER create multiple slight variations of the same keyword\n";
+        $prompt .= "- NEVER invent topics not actually covered in the content\n";
+        $prompt .= "- ALWAYS use domain-specific terminology exactly as the site uses it\n";
+        $prompt .= "- ALWAYS create keywords real people would actually type into Google\n";
+        $prompt .= "- ALWAYS use PROPER CAPITALIZATION for proper nouns, titles, and names (e.g. 'Dalai Lama' NOT 'dalai lama', 'Lama Zopa Rinpoche' NOT 'lama zopa rinpoche')\n";
+        $prompt .= "- Organization name/acronym MUST be a standalone HIGH priority keyword\n";
+        $prompt .= "- Generic topics should be lowercase (e.g. 'buddhist meditation', 'tibetan buddhism') but proper nouns MUST be capitalized\n\n";
         
-        $prompt .= "5. ASSIGN SEARCH INTENT:\n";
-        $prompt .= "   • Informational: User wants to learn/understand\n";
-        $prompt .= "   • Navigational: User looking for specific page/resource\n";
-        $prompt .= "   • Transactional: User ready to take action (sign up, download, join)\n";
-        $prompt .= "   • Commercial: User comparing options or researching before action\n\n";
-        
-        $prompt .= "6. DETERMINE PRIORITY:\n";
-        $prompt .= "   • HIGH: Core topic, high relevance, strong content match\n";
-        $prompt .= "   • MEDIUM: Secondary topic, good relevance, decent match\n";
-        $prompt .= "   • LOW: Tangential topic, lower relevance, weak match\n\n";
-        
-        $prompt .= "━━━ QUALITY STANDARDS ━━━\n\n";
-        $prompt .= "✓ Keywords MUST be authentic (what real people search)\n";
-        $prompt .= "✓ Keywords MUST match the actual content themes\n";
-        $prompt .= "✓ Keywords MUST be specific enough to be actionable\n";
-        $prompt .= "✓ Longtails MUST add value (not just word-for-word repeats)\n";
-        $prompt .= "✓ Search intent MUST be accurate for each keyword\n";
-        $prompt .= "✓ Priority MUST reflect content focus and quality\n\n";
-        
-        $prompt .= "❌ AVOID:\n";
-        $prompt .= "• Code/CSS/technical terms (border, padding, font, etc.)\n";
-        $prompt .= "• Single words or 2-word phrases (too broad)\n";
-        $prompt .= "• Overly long phrases (8+ words)\n";
-        $prompt .= "• Keywords with numbers/dates (unless part of name)\n";
-        $prompt .= "• Generic terms (stuff, things, content, etc.)\n\n";
-        
-        $prompt .= "━━━ REQUIRED JSON OUTPUT ━━━\n\n";
-        $prompt .= "Respond with ONLY a valid JSON array (no markdown, no explanations):\n\n";
-        $prompt .= "[\n";
-        $prompt .= "  {\n";
-        $prompt .= '    "primary_keyword": "buddhist meditation practices",'."\n";
-        $prompt .= '    "longtail_keywords": ['."\n";
-        $prompt .= '      "how to start buddhist meditation",'."\n";
-        $prompt .= '      "buddhist meditation for beginners guide",'."\n";
-        $prompt .= '      "daily buddhist meditation practices"'."\n";
-        $prompt .= '    ],'."\n";
-        $prompt .= '    "search_intent": "Informational",'."\n";
-        $prompt .= '    "priority": "HIGH",'."\n";
-        $prompt .= '    "reasoning": "Core topic with multiple related posts"'."\n";
-        $prompt .= "  },\n";
-        $prompt .= "  {\n";
-        $prompt .= '    "primary_keyword": "compassion in buddhism",'."\n";
-        $prompt .= '    "longtail_keywords": ['."\n";
-        $prompt .= '      "how to develop compassion buddhism",'."\n";
-        $prompt .= '      "compassion meditation techniques",'."\n";
-        $prompt .= '      "buddhist compassion practice daily life"'."\n";
-        $prompt .= '    ],'."\n";
-        $prompt .= '    "search_intent": "Informational",'."\n";
-        $prompt .= '    "priority": "MEDIUM",'."\n";
-        $prompt .= '    "reasoning": "Secondary theme appearing in several posts"'."\n";
-        $prompt .= "  }\n";
-        $prompt .= "]\n\n";
-        
-        $prompt .= "Generate 15-25 keyword objects in this format.\n";
-        $prompt .= "Each longtail_keywords array must have exactly 2-3 variants.\n";
-        $prompt .= "Focus on quality over quantity - every keyword should be genuinely useful.\n";
+        $prompt .= "Respond with ONLY a valid JSON array:\n";
+        $prompt .= '[{"primary_keyword":"Buddhist Meditation", "longtail_keywords":["buddhist meditation for beginners","how to do buddhist meditation","buddhist meditation techniques","tibetan buddhist meditation","buddhist meditation benefits"], "search_intent":"Informational", "priority":"HIGH", "reasoning":"core topic"}]' . "\n";
         
         return $prompt;
     }
@@ -353,13 +577,11 @@ class MFSEO_Content_Analyzer {
      * @return array Parsed keywords
      */
     private function parse_ai_keyword_response($response) {
-        // Strip markdown code blocks if present
         $response = preg_replace('/^```json\s*\n/m', '', $response);
         $response = preg_replace('/^```\s*\n/m', '', $response);
         $response = preg_replace('/\n```$/m', '', $response);
         $response = trim($response);
         
-        // Try to extract JSON if it's embedded in text
         if (!str_starts_with($response, '[')) {
             if (preg_match('/\[[\s\S]*\]/', $response, $matches)) {
                 $response = $matches[0];
@@ -378,35 +600,76 @@ class MFSEO_Content_Analyzer {
             return array();
         }
         
+        // Deduplicate: track primary keywords we've already seen to skip
+        // near-duplicates (substring overlap or very similar phrasing)
+        $seen_primaries = array();
         $keywords = array();
         
         foreach ($data as $item) {
-            // Validate structure
             if (!isset($item['primary_keyword']) || !isset($item['longtail_keywords']) || 
                 !isset($item['search_intent']) || !isset($item['priority'])) {
                 continue;
             }
             
-            // Validate search intent
+            $primary_raw = strtolower(trim(sanitize_text_field($item['primary_keyword'])));
+            
+            $word_count = str_word_count($primary_raw);
+            if ($word_count < 1 || $word_count > 6) {
+                continue;
+            }
+
             $valid_intents = array('Informational', 'Navigational', 'Transactional', 'Commercial');
             if (!in_array($item['search_intent'], $valid_intents)) {
-                $item['search_intent'] = 'Informational'; // Default
+                $item['search_intent'] = 'Informational';
             }
             
-            // Validate priority
             $valid_priorities = array('HIGH', 'MEDIUM', 'LOW');
             if (!in_array(strtoupper($item['priority']), $valid_priorities)) {
-                $item['priority'] = 'MEDIUM'; // Default
+                $item['priority'] = 'MEDIUM';
             } else {
                 $item['priority'] = strtoupper($item['priority']);
             }
+
+            $primary_sanitized = $this->sanitize_keyword_phrase_with_guidelines(sanitize_text_field($item['primary_keyword']));
+            if ($primary_sanitized === null) {
+                continue;
+            }
+
+            $primary = strtolower($primary_sanitized);
+            $is_duplicate = false;
+            foreach ($seen_primaries as $existing) {
+                if (strpos($existing, $primary) !== false || strpos($primary, $existing) !== false) {
+                    $is_duplicate = true;
+                    break;
+                }
+                $existing_words = explode(' ', $existing);
+                $primary_words = explode(' ', $primary);
+                $shared = count(array_intersect($primary_words, $existing_words));
+                $max_words = max(count($existing_words), count($primary_words));
+                if ($max_words > 0 && ($shared / $max_words) > 0.6) {
+                    $is_duplicate = true;
+                    break;
+                }
+            }
+            if ($is_duplicate) {
+                continue;
+            }
+            $seen_primaries[] = $primary;
             
-            // Process each longtail keyword
             if (is_array($item['longtail_keywords'])) {
-                foreach ($item['longtail_keywords'] as $longtail) {
+                $longtails = $item['longtail_keywords'];
+                foreach ($longtails as $longtail) {
+                    $longtail_clean = trim(sanitize_text_field($longtail));
+                    if (empty($longtail_clean) || str_word_count($longtail_clean) < 3) {
+                        continue;
+                    }
+                    $longtail_sanitized = $this->sanitize_keyword_phrase_with_guidelines($longtail_clean);
+                    if ($longtail_sanitized === null) {
+                        continue;
+                    }
                     $keywords[] = array(
-                        'primary_keyword' => sanitize_text_field($item['primary_keyword']),
-                        'longtail_keyword' => sanitize_text_field($longtail),
+                        'primary_keyword' => $primary_sanitized,
+                        'longtail_keyword' => $longtail_sanitized,
                         'search_intent' => $item['search_intent'],
                         'priority' => $item['priority'],
                         'source' => 'AI Generated'
@@ -416,6 +679,49 @@ class MFSEO_Content_Analyzer {
         }
         
         return $keywords;
+    }
+    
+    /**
+     * Fix proper noun capitalization in keywords using detected entities
+     */
+    private function fix_keyword_capitalization($keyword) {
+        $proper_nouns = array();
+
+        if (!empty($this->guideline_capitalize_terms_map)) {
+            foreach ($this->guideline_capitalize_terms_map as $lower => $correct) {
+                $proper_nouns[$lower] = $correct;
+            }
+        }
+        
+        if (!empty($this->detected_entities['people'])) {
+            foreach ($this->detected_entities['people'] as $name => $count) {
+                $proper_nouns[strtolower($name)] = $name;
+            }
+        }
+        if (!empty($this->detected_entities['key_terms'])) {
+            foreach ($this->detected_entities['key_terms'] as $term => $count) {
+                $proper_nouns[strtolower($term)] = $term;
+            }
+        }
+        
+        if (empty($proper_nouns)) {
+            return $keyword;
+        }
+        
+        // Sort by length (longest first) so "Lama Zopa Rinpoche" matches before "Lama Zopa"
+        uksort($proper_nouns, function($a, $b) {
+            return strlen($b) - strlen($a);
+        });
+        
+        $keyword_lower = strtolower($keyword);
+        foreach ($proper_nouns as $lower => $correct) {
+            if (strpos($keyword_lower, $lower) !== false) {
+                $keyword = preg_replace('/' . preg_quote($lower, '/') . '/i', $correct, $keyword);
+                $keyword_lower = strtolower($keyword);
+            }
+        }
+        
+        return $keyword;
     }
     
     /**
@@ -462,10 +768,13 @@ class MFSEO_Content_Analyzer {
         $count = 0;
         
         foreach ($keyword_frequency as $keyword => $frequency) {
-            if ($count >= 20) break; // Limit to top 20 (SEO best practice: focus on quality, not quantity)
-            if ($frequency < 3) continue; // Must appear at least 3 times (more selective)
+            if ($count >= 20) break;
+            if ($frequency < 3) continue;
             
-            // Determine search intent based on keyword
+            if ($this->is_junk_keyword($keyword)) {
+                continue;
+            }
+            
             $intent = $this->determine_search_intent($keyword);
             
             // Determine priority based on frequency
@@ -506,38 +815,51 @@ class MFSEO_Content_Analyzer {
         $content = html_entity_decode($content, ENT_QUOTES, 'UTF-8');
         $content = preg_replace('/&[a-z]+;/', '', $content); // Remove remaining HTML entities like &nbsp;
         
+        // Remove WordPress shortcodes entirely before any analysis
+        $content = preg_replace('/\[[^\]]+\]/', ' ', $content);
+        
         // AGGRESSIVE CSS/CODE PATTERN REMOVAL
-        // Remove ALL border/margin/padding patterns
         $content = preg_replace('/\b(border|margin|padding|text|font|background|color|width|height)-(top|bottom|left|right|color|style|width|radius|spacing|align|decoration|transform|shadow|family|size|weight|variant|stretch)\b/i', '', $content);
         
-        // Remove CSS property patterns
         $content = preg_replace('/\b(max|min)-(width|height|content|zoom)\b/', '', $content);
         $content = preg_replace('/\b(border|solid|dashed|dotted|none|auto|inherit|initial|unset)-/', '', $content);
         $content = preg_replace('/-?(top|bottom|left|right|center)\b/', '', $content);
         
-        // Remove hex colors and color codes
-        $content = preg_replace('/\b[0-9a-f]{3,6}\b/', '', $content); // Hex colors like ffffff, dfdad1
-        $content = preg_replace('/\b(rgba?|hsla?)\([^)]+\)/', '', $content); // Color functions
+        $content = preg_replace('/\b[0-9a-f]{3,6}\b/', '', $content);
+        $content = preg_replace('/\b(rgba?|hsla?)\([^)]+\)/', '', $content);
         
-        // Remove pixel/unit values
         $content = preg_replace('/\b[0-9]+(px|em|rem|%|vh|vw|pt|cm|mm|in)\b/', '', $content);
         
-        // Remove common code/tech class patterns
         $content = preg_replace('/\b(stk|wp|btn|nav|menu|widget|plugin|theme|post|page|admin|content|sidebar|footer|header)-[a-z-]+\b/', '', $content);
         
+        // Remove WordPress/HTML artifact words
+        $wp_artifacts = array(
+            'attachment', 'aligncenter', 'alignleft', 'alignright', 'alignnone',
+            'align', 'caption', 'shortcode', 'iframe', 'embed', 'noscript',
+            'onclick', 'onload', 'href', 'srcset', 'sizes', 'nofollow',
+            'noopener', 'noreferrer', 'target', 'blank', 'class', 'style',
+            'span', 'div', 'nbsp', 'amp', 'quot', 'lt', 'gt',
+            'thumbnail', 'fullsize', 'wp-image', 'size-full', 'size-large',
+            'size-medium', 'size-thumbnail', 'wp-caption', 'gallery-item',
+            'gallery-columns', 'gallery-size', 'attachment-full',
+            'entry-content', 'post-content', 'wp-block', 'has-text',
+            'has-background', 'is-layout', 'wp-element'
+        );
+        foreach ($wp_artifacts as $artifact) {
+            $content = preg_replace('/\b' . preg_quote($artifact, '/') . '\b/i', '', $content);
+        }
+        
         // Remove CSS keywords
-        $css_keywords = array('important', 'serif', 'sans-serif', 'sans', 'monospace', 'inherit', 'inline', 'block', 'flex', 'grid', 'absolute', 'relative', 'fixed', 'static', 'sticky', 'hidden', 'visible', 'auto', 'none', 'initial', 'unset', 'normal', 'bold', 'italic', 'underline');
+        $css_keywords = array('important', 'serif', 'sans-serif', 'sans', 'monospace', 'inherit', 'inline', 'block', 'flex', 'grid', 'absolute', 'relative', 'fixed', 'static', 'sticky', 'hidden', 'visible', 'auto', 'none', 'initial', 'unset', 'normal', 'bold', 'italic', 'underline', 'display', 'position', 'float', 'clear', 'overflow', 'opacity', 'transform', 'transition', 'animation');
         foreach ($css_keywords as $keyword) {
             $content = preg_replace('/\b' . preg_quote($keyword, '/') . '\b/', '', $content);
         }
         
-        // Remove font names
         $fonts = array('roboto', 'lato', 'arial', 'helvetica', 'verdana', 'georgia', 'times', 'courier', 'comic', 'impact', 'trebuchet', 'palatino', 'garamond');
         foreach ($fonts as $font) {
             $content = preg_replace('/\b' . preg_quote($font, '/') . '\b/', '', $content);
         }
         
-        // Remove tech/layout terms
         $tech_terms = array('wrapper', 'container', 'responsive', 'mobile', 'desktop', 'tablet', 'media', 'screen', 'viewport', 'breakpoint', 'overlay', 'modal', 'dropdown', 'accordion', 'carousel', 'slider', 'gallery');
         foreach ($tech_terms as $term) {
             $content = preg_replace('/\b' . preg_quote($term, '/') . '\b/', '', $content);
@@ -590,6 +912,38 @@ class MFSEO_Content_Analyzer {
     }
     
     /**
+     * Check if a keyword is WordPress/HTML junk that shouldn't be a keyword
+     *
+     * @param string $keyword Keyword to validate
+     * @return bool True if junk
+     */
+    private function is_junk_keyword($keyword) {
+        $junk_words = array(
+            'attachment', 'align', 'caption', 'thumbnail', 'shortcode',
+            'iframe', 'embed', 'noscript', 'nofollow', 'srcset', 'fullsize',
+            'gallery', 'nbsp', 'display', 'overflow', 'opacity', 'float',
+            'clear', 'position', 'inline', 'block', 'wrapper', 'container',
+            'widget', 'sidebar', 'footer', 'header', 'plugin', 'theme'
+        );
+        
+        $words = explode(' ', strtolower($keyword));
+        
+        $junk_count = 0;
+        foreach ($words as $word) {
+            if (in_array($word, $junk_words)) {
+                $junk_count++;
+            }
+        }
+        
+        // If more than half the words are junk, reject the keyword
+        if ($junk_count > 0 && ($junk_count / count($words)) >= 0.5) {
+            return true;
+        }
+        
+        return $this->is_code_pattern($keyword);
+    }
+    
+    /**
      * Check if a phrase looks like code or CSS
      *
      * @param string $phrase Phrase to check
@@ -632,7 +986,7 @@ class MFSEO_Content_Analyzer {
             return true;
         }
         
-        // Comprehensive tech/code terms blacklist
+        // Comprehensive tech/code/WordPress terms blacklist
         $tech_terms = array(
             'media', 'screen', 'wrapper', 'container', 'block', 'heading', 'widget', 
             'plugin', 'theme', 'roboto', 'lato', 'arial', 'helvetica', 'verdana',
@@ -640,7 +994,11 @@ class MFSEO_Content_Analyzer {
             'border', 'margin', 'padding', 'color', 'background', 'font', 'text',
             'width', 'height', 'left', 'right', 'bottom', 'center', 'style',
             'stk', 'btn', 'nav', 'menu', 'footer', 'header', 'sidebar', 'content',
-            'important', 'serif', 'sans', 'monospace', 'rgba', 'hsla', 'ffffff'
+            'important', 'serif', 'sans', 'monospace', 'rgba', 'hsla', 'ffffff',
+            'attachment', 'align', 'caption', 'thumbnail', 'shortcode', 'iframe',
+            'embed', 'noscript', 'nofollow', 'noopener', 'noreferrer', 'srcset',
+            'fullsize', 'gallery', 'nbsp', 'amp', 'quot', 'display', 'position',
+            'float', 'clear', 'overflow', 'opacity', 'transform', 'transition'
         );
         
         foreach ($tech_terms as $term) {
@@ -766,18 +1124,17 @@ class MFSEO_Content_Analyzer {
         $is_proper_noun = preg_match('/[A-Z]/', $keyword);
         
         if ($is_proper_noun) {
-            // For names like "Lama Zopa" - use relevant Buddhist/spiritual modifiers
             $patterns = array(
-                'teachings',
                 'biography',
                 'books',
                 'quotes',
-                'practice instructions',
-                'guided meditations',
-                'dharma talks',
-                'life story',
-                'advice',
-                'wisdom'
+                'interview',
+                'reviews',
+                'guide',
+                'history',
+                'overview',
+                'information',
+                'resources'
             );
             $pattern = $patterns[array_rand($patterns)];
             return $keyword . ' ' . $pattern;
@@ -801,9 +1158,9 @@ class MFSEO_Content_Analyzer {
             'complete guide' => 55,
             'step by step' => 45,
             'benefits' => 60,
-            'meaning' => 50,
-            'practice' => 55,
-            'meditation' => 40
+            'tips' => 50,
+            'best practices' => 55,
+            'examples' => 40
         );
         
         // Weighted random selection (60% prefix, 40% suffix)
@@ -845,30 +1202,34 @@ class MFSEO_Content_Analyzer {
      */
     public function analyze_for_guidelines($options = array()) {
         $defaults = array(
-            'post_types' => array('post'),
-            'limit' => 100,
-            'use_ai' => true // NEW: Use AI for analysis
+            'post_types' => array('post', 'page'),
+            'use_ai' => true,
+            'deep_analysis' => false,
+            'wizard_guidelines_snapshot' => '',
+            'ai_usage_context' => '',
         );
         
         $options = wp_parse_args($options, $defaults);
         
-        // Get posts
+        // Load a generous but manageable number of posts for pattern detection.
+        // 300 posts gives excellent coverage for finding proper nouns, names,
+        // and terminology patterns without blowing memory or timeouts.
         $posts = get_posts(array(
             'post_type' => $options['post_types'],
-            'posts_per_page' => $options['limit'],
-            'post_status' => 'publish'
+            'posts_per_page' => 300,
+            'post_status' => 'publish',
+            'orderby' => 'date',
+            'order' => 'DESC'
         ));
         
         if (empty($posts)) {
             return array();
         }
         
-        // NEW: Use AI-enhanced analysis if enabled
         if ($options['use_ai']) {
             return $this->ai_generate_guidelines($posts, $options);
         }
         
-        // FALLBACK: Original pattern-based analysis
         return $this->pattern_based_guidelines($posts);
     }
     
@@ -881,9 +1242,606 @@ class MFSEO_Content_Analyzer {
      * @return array Generated guidelines
      */
     private function ai_generate_guidelines($posts, $options) {
-        // For now, fall back to pattern-based
-        // TODO: Implement AI guidelines in next update
-        return $this->pattern_based_guidelines($posts);
+        $deep = !empty($options['deep_analysis']);
+        
+        // Gather content samples BEFORE calling pattern_based_guidelines,
+        // because that method clears $post->post_content to free memory.
+        $content_samples = array();
+        $max     = 22;
+        $excerpt = 650;
+        foreach ($posts as $post) {
+            $content = wp_strip_all_tags($post->post_content);
+            if (str_word_count($content) < 100) continue;
+            $content_samples[] = array(
+                'title' => $post->post_title,
+                'excerpt' => substr($content, 0, $excerpt),
+            );
+            if (count($content_samples) >= $max) break;
+        }
+        
+        $pattern_results = $this->pattern_based_guidelines($posts);
+        
+        if (empty($content_samples)) {
+            error_log('MindfulSEO: No content samples for AI guidelines — skipping AI call');
+            return $pattern_results;
+        }
+        
+        $existing_context = $this->load_existing_keyword_and_guideline_context();
+        if (!empty($options['wizard_guidelines_snapshot'])) {
+            $existing_context['wizard_guidelines_snapshot'] = $options['wizard_guidelines_snapshot'];
+        }
+        
+        $prompt = $this->build_guideline_generation_prompt($content_samples, $pattern_results, $existing_context);
+        
+        $ai_connector = MFSEO_AI_Connector::get_instance();
+        $gl_ctx = ! empty( $options['ai_usage_context'] ) ? $options['ai_usage_context'] : 'content_analyzer_guidelines';
+        $response = $ai_connector->generate_content($prompt, array(
+            'timeout' => $deep ? 150 : 90,
+            'temperature' => 0.3,
+            'max_tokens' => $deep ? 6000 : 4800,
+            'fast_model' => !$deep,
+            'usage_context' => $gl_ctx,
+        ));
+        
+        if (is_wp_error($response)) {
+            error_log('MindfulSEO Guideline AI Error: ' . $response->get_error_message());
+            $pattern_results['ai_error'] = $response->get_error_message();
+            return $pattern_results;
+        }
+        
+        error_log('MindfulSEO: AI guideline response received, length: ' . strlen($response));
+        
+        $ai_rules = $this->parse_ai_guideline_response($response, $pattern_results);
+        error_log('MindfulSEO: Parsed ' . count($ai_rules) . ' AI guideline rules');
+        
+        if (!empty($ai_rules)) {
+            $pattern_results['ai_guidelines'] = $ai_rules;
+            $pattern_results['ai_succeeded'] = true;
+            // AI generated all rule types — drop noisy pattern-based preferred terms and common phrases
+            $pattern_results['preferred_terms'] = array();
+            $pattern_results['common_phrases'] = array();
+            $pattern_results['avoid_terms'] = array();
+            unset($pattern_results['semantic_avoid_terms']);
+        } else {
+            $pattern_results['ai_succeeded'] = false;
+        }
+        
+        return $pattern_results;
+    }
+    
+    /**
+     * Load existing keywords and guidelines from the database to provide
+     * domain context for the AI guideline generation prompt.
+     */
+    private function load_existing_keyword_and_guideline_context() {
+        $context = array(
+            'primary_keywords' => array(),
+            'existing_rules' => array(),
+        );
+        
+        if (class_exists('MFSEO_Keyword_Manager')) {
+            $km = MFSEO_Keyword_Manager::get_instance();
+            $keywords = $km->get_keywords(array('limit' => 200));
+            $seen = array();
+            foreach ($keywords as $kw) {
+                $pk = $kw->primary_keyword;
+                if (!isset($seen[$pk])) {
+                    $context['primary_keywords'][] = $pk;
+                    $seen[$pk] = true;
+                }
+            }
+        }
+        
+        if (class_exists('MFSEO_Guidelines_Engine')) {
+            $ge = MFSEO_Guidelines_Engine::get_instance();
+            $rules = $ge->get_all_rules(array('active_only' => false));
+            foreach ($rules as $rule) {
+                $context['existing_rules'][] = array(
+                    'type' => $rule->rule_type,
+                    'avoid' => $rule->avoid_term,
+                    'preferred' => $rule->preferred_term,
+                );
+            }
+        }
+        
+        return $context;
+    }
+    
+    private function build_guideline_generation_prompt($samples, $pattern_results, $existing_context = array()) {
+        $site_name = get_bloginfo('name');
+        $site_description = get_bloginfo('description');
+        
+        $prompt = "You are an expert SEO editor creating comprehensive language guidelines for a website. ";
+        $prompt .= "You will generate rules across multiple categories based on the site's content, existing keyword strategy, and existing guidelines.\n\n";
+        
+        $prompt .= "=== WEBSITE ===\n";
+        $prompt .= "Name: {$site_name}\n";
+        if (!empty($site_description)) {
+            $prompt .= "Tagline: {$site_description}\n";
+        }
+        
+        $categories = get_categories(array('hide_empty' => true, 'orderby' => 'count', 'order' => 'DESC', 'number' => 15));
+        if (!empty($categories)) {
+            $cat_names = array_map(function($c) { return $c->name; }, $categories);
+            $prompt .= "Categories: " . implode(', ', $cat_names) . "\n";
+        }
+        $prompt .= "\n";
+
+        if (!empty($existing_context['wizard_guidelines_snapshot'])) {
+            $prompt .= "=== PREVIOUS SAVED LANGUAGE GUIDELINES (from database — IMPROVE: refine, expand, and deduplicate; replace weak rules with stronger ones) ===\n";
+            $prompt .= $this->truncate_for_ai_prompt( $existing_context['wizard_guidelines_snapshot'], 12000 ) . "\n\n";
+        }
+        
+        if (!empty($existing_context['primary_keywords'])) {
+            $prompt .= "=== EXISTING KEYWORD STRATEGY ===\n";
+            $prompt .= "These are the site's target SEO keywords (use them to understand the site's domain and focus):\n";
+            $prompt .= implode(', ', array_slice($existing_context['primary_keywords'], 0, 40)) . "\n\n";
+        }
+        
+        if (!empty($existing_context['existing_rules'])) {
+            $prompt .= "=== EXISTING LANGUAGE GUIDELINES (do NOT duplicate) ===\n";
+            $grouped = array();
+            foreach ($existing_context['existing_rules'] as $r) {
+                $grouped[$r['type']][] = $r;
+            }
+            foreach ($grouped as $type => $rules) {
+                $prompt .= strtoupper(str_replace('_', ' ', $type)) . ":\n";
+                foreach (array_slice($rules, 0, 15) as $r) {
+                    if (!empty($r['avoid']) && !empty($r['preferred'])) {
+                        $prompt .= "  - \"{$r['avoid']}\" → \"{$r['preferred']}\"\n";
+                    } elseif (!empty($r['preferred'])) {
+                        $prompt .= "  - \"{$r['preferred']}\"\n";
+                    }
+                }
+            }
+            $prompt .= "\n";
+        }
+        
+        $prompt .= "=== CONTENT SAMPLES ===\n\n";
+        foreach ($samples as $i => $s) {
+            $prompt .= ($i + 1) . ". \"{$s['title']}\"\n   {$s['excerpt']}\n\n";
+        }
+        
+        if (!empty($pattern_results['capitalize_terms'])) {
+            $prompt .= "=== DETECTED PROPER NOUNS (already handled as capitalize rules) ===\n";
+            $prompt .= implode(', ', array_slice($pattern_results['capitalize_terms'], 0, 20)) . "\n\n";
+        }
+        
+        $prompt .= "=== TASK ===\n\n";
+
+        $prompt .= "Build a PRACTICAL STARTER SET of language rules the site will use immediately for AI-assisted SEO (titles, meta, keywords, batch optimization). ";
+        $prompt .= "Coverage should be broad enough that optimization runs smoothly without editors having to add dozens of rules by hand first.\n\n";
+
+        $prompt .= "Generate 30-55 NEW language rules that COMPLEMENT the existing guidelines. Each rule must have a \"type\" field. The four types are:\n\n";
+
+        $prompt .= "TYPE 1: \"avoid_term\" — SEMANTIC DOMAIN REPLACEMENTS (generate at least 12)\n";
+        $prompt .= "Words that outsiders/casual writers use vs the correct domain-specific term.\n";
+        $prompt .= "Both \"avoid\" and \"preferred\" fields are required.\n";
+        $prompt .= "Think: What would a newcomer/outsider call things on this site vs what insiders call them?\n";
+        $prompt .= "Also include common misspellings of domain terms.\n";
+        $prompt .= "Examples: 'ritual' → 'practice', 'budha' → 'Buddha', 'priest' → 'lama'\n\n";
+
+        $prompt .= "TYPE 2: \"capitalize\" — CANONICAL PROPER NAMES (generate at least 10)\n";
+        $prompt .= "Use the site's STANDARD full name for each entity — Title Case, no extra fluff.\n";
+        $prompt .= "PEOPLE: full name as you would list them in a directory (e.g. given names + family/Rinpoche line). Do NOT add leading adjectives (\"Great\", \"Venerable\", \"Dear\", \"Beloved\"), stacked honorifics, or descriptive clauses. No comma-separated bios.\n";
+        $prompt .= "PLACES (monasteries, temples, schools, centers): OFFICIAL name only — e.g. \"Kopan Monastery\", \"Sagarmatha Secondary School\". Do NOT prepend \"Our\", \"The famous\", \"Beautiful\", region stacks, or marketing words.\n";
+        $prompt .= "Only \"preferred\" field is needed (the correctly capitalized form).\n";
+        $prompt .= "NEVER use standalone common nouns: 'office', 'center', 'practice', 'retreat', 'community', 'event', 'fund', 'newsletter', 'program' (unless part of a real proper name like \"X Program\" where X is the official brand).\n";
+        $prompt .= "Examples: 'Lama Zopa Rinpoche', 'Medicine Buddha', 'Heart Sutra', 'Rolwaling Sangag Choling Monastery'\n\n";
+
+        $prompt .= "TYPE 3: \"preferred_term\" — SHORT FORM → FULL FORM ONLY (generate at least 4)\n";
+        $prompt .= "ONLY when the site uses BOTH a short label and a longer official name for the SAME entity (e.g. \"FPMT\" → full org name, \"ILTK\" → full institute name).\n";
+        $prompt .= "Both \"avoid\" and \"preferred\" are REQUIRED. \"avoid\" must be SHORT (1–3 words). \"preferred\" must be 2–5 words max.\n";
+        $prompt .= "FORBIDDEN for preferred_term: post titles, newsletter headlines, or vague phrases. Put people's and institutions' CANONICAL names under \"capitalize\" instead.\n";
+        $prompt .= "preferred_term is ONLY for short label → longer official name (e.g. acronyms), not for copying headlines.\n";
+        $prompt .= "Examples: 'Zopa Rinpoche' → 'Lama Zopa Rinpoche', 'ILTK' → 'Istituto Lama Tzong Khapa'\n\n";
+
+        $prompt .= "TYPE 4: \"seo_friendly\" — KEY DOMAIN PHRASES FOR SEO (generate at least 8)\n";
+        $prompt .= "Short, realistic search phrases (2–6 words) that match how people search — NOT article titles or proper nouns copied from content.\n";
+        $prompt .= "Only \"preferred\" field is needed.\n";
+        $prompt .= "Examples: 'buddhist meditation practice', 'tibetan buddhist teachings'\n\n";
+
+        $prompt .= "CRITICAL RULES:\n";
+        $prompt .= "- Hit the minimum counts per type; prefer slightly more avoid_term and seo_friendly if you must choose — they anchor keyword and phrasing consistency during optimization\n";
+        $prompt .= "- Do NOT duplicate any existing guidelines shown above\n";
+        $prompt .= "- Do NOT duplicate any detected proper nouns shown above\n";
+        $prompt .= "- Focus on DOMAIN-SPECIFIC language, not general grammar\n";
+        $prompt .= "- preferred_term: short↔long pairs only; \"preferred\" max 5 words. Full person/place names belong in \"capitalize\", not here.\n";
+        $prompt .= "- seo_friendly: max 6 words, max ~70 characters; must read like a search query, not a page headline\n";
+        $prompt .= "- capitalize: canonical full names only (people & institutions); max 7 words / 78 characters; NO headline adjectives, NO comma-separated clauses, NO em-dash subtitles\n";
+        $prompt .= "- Do NOT create preferred_term rules for obscure fund names, minor programs, or rarely-referenced institutions\n";
+        $prompt .= "- seo_friendly terms should be phrases people actually search for\n";
+        $prompt .= "- The 'context' field briefly explains WHY the rule matters\n";
+        $prompt .= "- NEVER use possessive forms (e.g. \"Rinpoche's\") as avoid terms — possessives are normal grammar, not wrong terminology\n";
+        $prompt .= "- NEVER eliminate legitimate terms that have distinct meanings. E.g. 'nunnery' is NOT wrong for 'monastery' — they refer to different things\n";
+        $prompt .= "- Only create avoid rules where the avoid term is genuinely WRONG or INAPPROPRIATE, not just a different but valid word\n";
+        $prompt .= "- avoid_term: Do NOT flag standard English vocabulary as wrong. Words like 'enlightenment', 'morality', 'spiritual guide', 'retreat', 'prayer' are perfectly valid. Only flag terms that are genuinely incorrect or misleading in this domain.\n";
+        $prompt .= "- capitalize: Ask yourself — would this word be capitalized in a newspaper? If not, it is NOT a proper noun. 'Office', 'Center', 'Fund' etc. are common nouns unless part of a specific proper name.\n\n";
+
+        $settings = get_option('mindfulseo_settings', array());
+        if (!empty($settings['guideline_generation_prompt'])) {
+            $custom = trim(wp_kses_post($settings['guideline_generation_prompt']));
+            if ($custom !== '') {
+                $prompt .= "=== CUSTOM INSTRUCTIONS FROM SITE EDITOR (apply across all rule types) ===\n";
+                $prompt .= $this->truncate_for_ai_prompt($custom, 6000) . "\n\n";
+            }
+        }
+
+        $prompt .= "Respond with ONLY a valid JSON array:\n";
+        $prompt .= '[{"type":"avoid_term","avoid":"wrong term","preferred":"correct term","context":"why"},';
+        $prompt .= '{"type":"capitalize","preferred":"Correct Name","context":"why"},';
+        $prompt .= '{"type":"preferred_term","avoid":"short form","preferred":"full correct form","context":"why"},';
+        $prompt .= '{"type":"seo_friendly","preferred":"search phrase","context":"why"}]' . "\n";
+
+        return $prompt;
+    }
+    
+    private function parse_ai_guideline_response($response, $pattern_results) {
+        $response = preg_replace('/^```json\s*\n/m', '', $response);
+        $response = preg_replace('/^```\s*\n/m', '', $response);
+        $response = preg_replace('/\n```$/m', '', $response);
+        $response = trim($response);
+        
+        if (!str_starts_with($response, '[')) {
+            if (preg_match('/\[[\s\S]*\]/', $response, $matches)) {
+                $response = $matches[0];
+            }
+        }
+        
+        $data = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
+            error_log('MindfulSEO: JSON parse error in AI guidelines: ' . json_last_error_msg());
+            return array();
+        }
+        
+        $existing_terms = array();
+        if (!empty($pattern_results['capitalize_terms'])) {
+            foreach ($pattern_results['capitalize_terms'] as $ct) {
+                $existing_terms[strtolower($ct)] = true;
+            }
+        }
+        
+        $valid_types = array('avoid_term', 'capitalize', 'preferred_term', 'seo_friendly');
+        $rules = array();
+        $seen = array();
+        
+        foreach ($data as $item) {
+            $type = isset($item['type']) ? sanitize_text_field(trim($item['type'])) : 'avoid_term';
+            if (!in_array($type, $valid_types)) continue;
+            
+            $preferred = isset($item['preferred']) ? sanitize_text_field(trim($item['preferred'])) : '';
+            $avoid = isset($item['avoid']) ? sanitize_text_field(trim($item['avoid'])) : '';
+            $context = isset($item['context']) ? sanitize_text_field(trim($item['context'])) : '';
+            
+            if (empty($preferred)) continue;
+            
+            if (in_array($type, array('avoid_term', 'preferred_term'))) {
+                if (empty($avoid)) continue;
+                if (strtolower($avoid) === strtolower($preferred)) continue;
+            }
+
+            if ( ! $this->ai_guideline_rule_passes_quality_gate( $type, $avoid, $preferred ) ) {
+                continue;
+            }
+
+            // Pair-based dedupe for avoid/preferred_term so many misspellings → same correct form all survive.
+            if ( $type === 'avoid_term' || $type === 'preferred_term' ) {
+                $dedup_key = $type . ':' . strtolower( $avoid ) . '=>' . strtolower( $preferred );
+            } else {
+                $dedup_key = $type . ':' . strtolower( $preferred );
+            }
+            if (isset($seen[$dedup_key])) continue;
+            // Pattern already adds capitalize for these tokens; skip duplicate AI capitalize only — keep avoid/preferred pairs.
+            if ( $type === 'capitalize' && isset( $existing_terms[ strtolower( $preferred ) ] ) ) {
+                continue;
+            }
+
+            $seen[$dedup_key] = true;
+            $rules[] = array(
+                'type' => $type,
+                'avoid' => $avoid,
+                'preferred' => $preferred,
+                'context' => $context,
+            );
+        }
+        
+        return $rules;
+    }
+
+    /**
+     * Drop AI rules that look like post titles, one-off entity dumps, or invalid pairs.
+     *
+     * @param string $type Rule type.
+     * @param string $avoid Avoid text.
+     * @param string $preferred Preferred text.
+     * @return bool
+     */
+    private function ai_guideline_rule_passes_quality_gate( $type, $avoid, $preferred ) {
+        $preferred = trim( (string) $preferred );
+        $avoid     = trim( (string) $avoid );
+        $pw        = str_word_count( $preferred );
+        $aw        = str_word_count( $avoid );
+
+        if ( $type === 'capitalize' ) {
+            if ( $this->guideline_capitalize_invalid( $preferred ) ) {
+                return false;
+            }
+        } else {
+            if ( $this->guideline_string_looks_like_title_or_entity_dump( $preferred ) ) {
+                return false;
+            }
+            if ( $avoid !== '' && $this->guideline_string_looks_like_title_or_entity_dump( $avoid ) ) {
+                return false;
+            }
+        }
+
+        switch ( $type ) {
+            case 'capitalize':
+                if ( $pw < 1 || $pw > 7 ) {
+                    return false;
+                }
+                if ( strlen( $preferred ) > 78 ) {
+                    return false;
+                }
+                break;
+            case 'seo_friendly':
+                if ( preg_match( "/'s\\b/u", $preferred ) ) {
+                    return false;
+                }
+                if ( preg_match( '/\sorganization$/iu', $preferred ) ) {
+                    return false;
+                }
+                if ( $pw < 2 || $pw > 6 ) {
+                    return false;
+                }
+                if ( strlen( $preferred ) > 72 ) {
+                    return false;
+                }
+                break;
+            case 'preferred_term':
+                if ( $aw < 1 || $aw > 3 ) {
+                    return false;
+                }
+                if ( $pw < 2 || $pw > 5 ) {
+                    return false;
+                }
+                if ( strlen( $preferred ) > 90 || strlen( $avoid ) > 45 ) {
+                    return false;
+                }
+                break;
+            case 'avoid_term':
+                if ( strlen( $preferred ) > 120 || strlen( $avoid ) > 85 ) {
+                    return false;
+                }
+                break;
+            default:
+                return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Capitalize rules: allow full person / monastery / school names; reject headline fluff.
+     *
+     * @param string $s Preferred form.
+     * @return bool True if invalid.
+     */
+    private function guideline_capitalize_invalid( $s ) {
+        $s = trim( (string) $s );
+        if ( $s === '' ) {
+            return true;
+        }
+        $wc = str_word_count( $s );
+        if ( $wc < 1 || $wc > 7 ) {
+            return true;
+        }
+        if ( strlen( $s ) > 78 ) {
+            return true;
+        }
+        if ( $this->guideline_capitalize_has_headline_fluff( $s ) ) {
+            return true;
+        }
+        if ( in_array( strtolower( $s ), $this->get_pattern_capitalize_blocklist(), true ) ) {
+            return true;
+        }
+        if ( substr_count( $s, ',' ) >= 2 ) {
+            return true;
+        }
+        if ( preg_match( '/\b(Program|Coordinator|Newsletter|Stories Needed|Annual Report)\b/i', $s ) && $wc >= 5 ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Leading adjectives / promo words / title patterns — not canonical names.
+     *
+     * @param string $s String.
+     * @return bool True if fluff detected.
+     */
+    private function guideline_capitalize_has_headline_fluff( $s ) {
+        $t = trim( $s );
+        if ( $t === '' ) {
+            return true;
+        }
+        if ( preg_match( '/\s[—–]\s/', $t ) ) {
+            return true;
+        }
+        if ( preg_match( '/\([^)]{25,}\)/', $t ) ) {
+            return true;
+        }
+
+        $parts = preg_split( '/\s+/', $t, 2 );
+        $first = isset( $parts[0] ) ? strtolower( $parts[0] ) : '';
+        $bad_first = array(
+            'our', 'your', 'my', 'the', 'a', 'an', 'new', 'annual', 'special', 'important', 'free', 'join',
+            'celebrating', 'welcome', 'dear', 'great', 'holy', 'sacred', 'wonderful', 'amazing', 'latest', 'exclusive',
+            'official', 'featured', 'introducing', 'remembering', 'honoring', 'supporting', 'discover', 'explore',
+            'beautiful', 'famous', 'international', 'local', 'regarding', 'offering', 'announcing',
+        );
+        if ( in_array( $first, $bad_first, true ) ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Heuristic: post titles, SEO noise — for non-capitalize rule types.
+     *
+     * @param string $s String.
+     * @return bool True if should reject.
+     */
+    private function guideline_string_looks_like_title_or_entity_dump( $s ) {
+        $s = trim( $s );
+        if ( $s === '' ) {
+            return true;
+        }
+        if ( strlen( $s ) > 85 ) {
+            return true;
+        }
+        $wc = str_word_count( $s );
+        if ( $wc >= 6 ) {
+            return true;
+        }
+        if ( preg_match( '/\b(Program|Secondary School|Coordinator|Newsletter|Stories Needed|Stories|Annual Report)\b/i', $s ) && $wc >= 4 ) {
+            return true;
+        }
+        if ( preg_match( '/[—–]|(\s-\s)/', $s ) && $wc >= 4 ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Single-word pattern capitalize candidates that are common nouns / fragments, not editorial proper nouns.
+     *
+     * @return list<string> Lowercase.
+     */
+    private function get_pattern_capitalize_blocklist() {
+        return array(
+            'office', 'offices', 'centre', 'center', 'centres', 'centers',
+            'medicine', 'medicines', 'medical', 'khapa',
+        );
+    }
+
+    /**
+     * Drop pattern-based capitalize terms that are generic English or meaningless fragments.
+     *
+     * @param array $terms Terms from find_capitalized_terms.
+     * @return list<string>
+     */
+    private function filter_pattern_capitalize_terms( $terms ) {
+        $block = array_fill_keys( $this->get_pattern_capitalize_blocklist(), true );
+        $out   = array();
+        foreach ( $terms as $term ) {
+            $t = trim( (string) $term );
+            if ( $t === '' ) {
+                continue;
+            }
+            $lower = strtolower( $t );
+            if ( isset( $block[ $lower ] ) ) {
+                continue;
+            }
+            $out[] = $t;
+        }
+        return array_values( $out );
+    }
+
+    /**
+     * Repeated Title Case three-word phrases (e.g. person / place names) for fragment filtering.
+     *
+     * @param string $content Plain text.
+     * @return list<string> Canonical Title Case phrases.
+     */
+    private function extract_frequent_titlecase_trigrams( $content ) {
+        $out = array();
+        if ( preg_match_all( '/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){2})\b/u', $content, $m ) ) {
+            $counts = array_count_values( $m[1] );
+            $counts = array_filter(
+                $counts,
+                function ( $n ) {
+                    return $n >= 6;
+                }
+            );
+            arsort( $counts, SORT_NUMERIC );
+            $out = array_slice( array_keys( $counts ), 0, 10 );
+        }
+        // Case-insensitive: canonical teacher name often repeated with mixed casing in body text.
+        if ( preg_match_all( '/\b(Lama\s+Zopa\s+Rinpoche)\b/iu', $content, $lm ) ) {
+            if ( count( $lm[0] ) >= 4 ) {
+                $out[] = 'Lama Zopa Rinpoche';
+            }
+        }
+        return array_values( array_unique( $out ) );
+    }
+
+    /**
+     * Strip junk SEO rows, merge canonical multi-word names, drop bigrams subsumed by a frequent trigram.
+     *
+     * @param list<string> $phrases Candidate phrases (frequency-ordered).
+     * @param string       $content Plain text (same corpus as find_common_phrases).
+     * @return list<string>
+     */
+    private function refine_common_phrases_list( array $phrases, $content ) {
+        $phrases = array_map( 'trim', $phrases );
+        $phrases = array_values( array_filter( $phrases ) );
+
+        $phrases = array_values(
+            array_filter(
+                $phrases,
+                function ( $p ) {
+                    if ( preg_match( "/'s\\b/u", $p ) || preg_match( "/'s\\s*$/u", $p ) ) {
+                        return false;
+                    }
+                    if ( preg_match( '/\sorganization$/iu', $p ) ) {
+                        return false;
+                    }
+                    return true;
+                }
+            )
+        );
+
+        $trigrams = $this->extract_frequent_titlecase_trigrams( $content );
+        $trigrams = array_unique( $trigrams );
+
+        foreach ( $trigrams as $long ) {
+            $before  = $phrases;
+            $phrases = array_values(
+                array_filter(
+                    $phrases,
+                    function ( $p ) use ( $long ) {
+                        if ( strcasecmp( $p, $long ) === 0 ) {
+                            return true;
+                        }
+                        if ( str_word_count( $p ) >= str_word_count( $long ) ) {
+                            return true;
+                        }
+                        return ! preg_match( '/\b' . preg_quote( $p, '/' ) . '\b/iu', $long );
+                    }
+                )
+            );
+            $subsumed = count( $before ) > count( $phrases );
+            if ( $subsumed ) {
+                $have = false;
+                foreach ( $phrases as $p ) {
+                    if ( strcasecmp( $p, $long ) === 0 ) {
+                        $have = true;
+                        break;
+                    }
+                }
+                if ( ! $have ) {
+                    $phrases[] = $long;
+                }
+            }
+        }
+
+        $phrases = array_values( array_unique( $phrases ) );
+
+        return array_slice( $phrases, 0, 15 );
     }
     
     /**
@@ -893,157 +1851,480 @@ class MFSEO_Content_Analyzer {
      * @return array Guidelines
      */
     private function pattern_based_guidelines($posts) {
-        // Analyze content patterns
         $all_content = '';
         $titles = array();
         
         foreach ($posts as $post) {
-            $all_content .= ' ' . $post->post_content;
+            // Replace closing tags with '. ' before stripping so the proper-noun
+            // regex can't match across HTML element boundaries (prevents phantoms
+            // like "Community News Stories Retreat Stories Needed" from nav menus).
+            $cleaned = preg_replace('/<\/[^>]+>/', '. ', $post->post_content);
+            $cleaned = wp_strip_all_tags($cleaned);
+            $all_content .= ' ' . $cleaned;
             $titles[] = $post->post_title;
+            $post->post_content = '';
         }
         
-        $suggestions = array(
-            'capitalize_terms' => $this->find_capitalized_terms($all_content, $titles),
-            'common_phrases' => $this->find_common_phrases($all_content),
-            'brand_voice' => $this->analyze_brand_voice($all_content)
-        );
+        $capitalize_terms = $this->find_capitalized_terms($all_content, $titles);
+        $preferred_terms = $this->find_preferred_terms($all_content, $titles);
+        $common_phrases = $this->find_common_phrases($all_content, $preferred_terms, $capitalize_terms);
+        $avoid_terms = $this->find_avoid_terms($all_content, $preferred_terms);
+        $brand_voice = $this->analyze_brand_voice($all_content);
         
-        return $suggestions;
+        $preferred_lower = array_map('strtolower', $preferred_terms);
+        $capitalize_terms = array_filter($capitalize_terms, function($term) use ($preferred_lower) {
+            $term_lower = strtolower($term);
+            foreach ($preferred_lower as $pref) {
+                if ($term_lower === $pref || stripos($pref, $term_lower) !== false) {
+                    return false;
+                }
+            }
+            return true;
+        });
+        $capitalize_terms = array_values( $this->filter_pattern_capitalize_terms( $capitalize_terms ) );
+        
+        return array(
+            'capitalize_terms' => $capitalize_terms,
+            'common_phrases' => $common_phrases,
+            'preferred_terms' => $preferred_terms,
+            'avoid_terms' => $avoid_terms,
+            'brand_voice' => $brand_voice,
+        );
     }
     
     /**
-     * Find consistently capitalized terms
+     * Find consistently capitalized terms (proper nouns, not sentence starters)
+     *
+     * Returns BOTH single-word proper nouns and multi-word proper noun phrases.
+     * Also detects ALL-CAPS acronyms. Uses strict filtering to avoid fragments
+     * and common English words.
      *
      * @param string $content Content to analyze
      * @param array $titles Post titles
      * @return array Capitalized terms
      */
     private function find_capitalized_terms($content, $titles) {
-        // Find words that are consistently capitalized
-        $words = str_word_count($content, 1);
-        $capitalized = array();
-        
-        foreach ($words as $word) {
-            if (strlen($word) > 3 && preg_match('/^[A-Z][a-z]+$/', $word)) {
-                if (!isset($capitalized[$word])) {
-                    $capitalized[$word] = 0;
+        $content_clean = wp_strip_all_tags($content);
+        $content_clean = html_entity_decode($content_clean, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if (strlen($content_clean) > 500000) {
+            $content_clean = substr($content_clean, 0, 500000);
+        }
+
+        // Comprehensive blocklist of common English words that start sentences
+        $common_words = array(
+            'this', 'that', 'these', 'those', 'there', 'their', 'they', 'them',
+            'here', 'where', 'when', 'what', 'which', 'while', 'with', 'were',
+            'have', 'been', 'will', 'would', 'could', 'should', 'shall',
+            'many', 'much', 'most', 'more', 'some', 'such', 'each', 'every',
+            'also', 'only', 'just', 'even', 'still', 'well', 'very', 'then',
+            'after', 'before', 'about', 'above', 'below', 'from', 'into',
+            'over', 'under', 'between', 'through', 'during', 'since', 'until',
+            'please', 'thank', 'thanks', 'note', 'learn', 'read', 'view',
+            'click', 'visit', 'find', 'make', 'take', 'give', 'come', 'know',
+            'like', 'want', 'need', 'feel', 'look', 'work', 'call', 'help',
+            'keep', 'send', 'join', 'free', 'open', 'live', 'love', 'life',
+            'home', 'back', 'good', 'great', 'long', 'full', 'high', 'last',
+            'first', 'next', 'part', 'both', 'being', 'other', 'same', 'told',
+            'photo', 'image', 'video', 'link', 'post', 'page', 'site', 'blog',
+            'fund', 'form', 'plan', 'text', 'book', 'year', 'time', 'date',
+            'name', 'type', 'land', 'four', 'five', 'said', 'does', 'done',
+            'however', 'therefore', 'although', 'because', 'another', 'letter',
+            'world', 'today', 'right', 'place', 'number', 'point', 'group',
+            'always', 'never', 'often', 'sometimes', 'usually', 'really',
+            'truly', 'quite', 'rather', 'almost', 'already', 'indeed',
+            'perhaps', 'maybe', 'certainly', 'actually', 'especially',
+            'together', 'different', 'important', 'special', 'possible',
+            'several', 'nothing', 'everything', 'something', 'anything',
+            'everyone', 'someone', 'anyone', 'nobody', 'people', 'person',
+            'begin', 'began', 'start', 'using', 'making', 'going', 'coming',
+            'taking', 'giving', 'looking', 'working', 'living', 'getting',
+            'offer', 'offers', 'offered', 'welcome', 'share', 'support',
+            'program', 'project', 'event', 'service', 'practice', 'course',
+            'class', 'meeting', 'retreat', 'conference', 'session', 'center',
+            'recent', 'latest', 'early', 'late', 'young', 'local', 'annual',
+            'dear', 'happy', 'sorry', 'along', 'among', 'against', 'toward',
+            'abbey', 'duke', 'earth', 'month', 'april', 'march', 'august',
+            'general', 'particular', 'according',
+        );
+
+        // Track mid-sentence capitalized words vs lowercase occurrences
+        $mid_sentence_caps = array();
+        $lowercase_counts = array();
+
+        $sentences = preg_split('/(?<=[.!?:;])\s+/', $content_clean);
+
+        foreach ($sentences as $sentence) {
+            $words = preg_split('/\s+/', trim($sentence));
+
+            foreach ($words as $idx => $word) {
+                $clean_word = trim($word, '.,;:!?"\'()[]{}–—-…');
+
+                if (strlen($clean_word) < 5) {
+                    continue;
                 }
-                $capitalized[$word]++;
+
+                $lower = strtolower($clean_word);
+
+                if (in_array($lower, $common_words)) {
+                    continue;
+                }
+
+                if (preg_match('/^[A-Z][a-z]+$/', $clean_word)) {
+                    if ($idx > 0) {
+                        if (!isset($mid_sentence_caps[$clean_word])) {
+                            $mid_sentence_caps[$clean_word] = 0;
+                        }
+                        $mid_sentence_caps[$clean_word]++;
+                    }
+                } elseif (preg_match('/^[a-z]+$/', $clean_word)) {
+                    if (!isset($lowercase_counts[$lower])) {
+                        $lowercase_counts[$lower] = 0;
+                    }
+                    $lowercase_counts[$lower]++;
+                }
             }
         }
-        
-        // Filter by frequency (must appear at least 5 times)
-        $capitalized = array_filter($capitalized, function($count) {
-            return $count >= 5;
-        });
-        
-        arsort($capitalized);
-        
-        return array_keys(array_slice($capitalized, 0, 20));
+
+        // Strict filtering: must appear capitalized mid-sentence at least 5 times
+        // and appear capitalized MORE than lowercase
+        $proper_nouns = array();
+
+        foreach ($mid_sentence_caps as $word => $cap_count) {
+            if ($cap_count < 5) {
+                continue;
+            }
+
+            $lower = strtolower($word);
+            $low_count = isset($lowercase_counts[$lower]) ? $lowercase_counts[$lower] : 0;
+
+            // Must appear capitalized significantly more than lowercase
+            if ($low_count == 0 || $cap_count > ($low_count * 3)) {
+                $proper_nouns[$word] = $cap_count;
+            }
+        }
+
+        // Also add ALL-CAPS acronyms found frequently
+        if (preg_match_all('/\b([A-Z]{2,10})\b/', $content_clean, $acr_matches)) {
+            $acr_counts = array_count_values($acr_matches[0]);
+            $skip_acrs = array('HTML', 'CSS', 'PHP', 'URL', 'HTTP', 'HTTPS', 'RSS', 'API', 'XML', 'JSON', 'PDF', 'ID', 'OK', 'AM', 'PM', 'US', 'UK');
+            foreach ($acr_counts as $acr => $count) {
+                if ($count >= 5 && !in_array($acr, $skip_acrs)) {
+                    $proper_nouns[$acr] = $count;
+                }
+            }
+        }
+
+        arsort($proper_nouns);
+
+        return array_keys(array_slice($proper_nouns, 0, 40));
     }
     
     /**
-     * Find common phrases in content
+     * Find common domain-specific phrases in content that represent
+     * consistent terminology the site uses.
+     *
+     * Returns phrases that are used frequently and are genuine domain
+     * terms, not fragments of proper names or generic English.
      *
      * @param string $content Content to analyze
+     * @param array $proper_nouns Known proper nouns to filter fragments against
+     * @param array $capitalize_terms Known capitalized terms to filter against
      * @return array Common phrases
      */
-    private function find_common_phrases($content) {
-        $phrases = $this->extract_phrases($content);
-        $frequency = array_count_values($phrases);
+    private function find_common_phrases($content, $proper_nouns = array(), $capitalize_terms = array()) {
+        $content_clean = wp_strip_all_tags($content);
+        $content_clean = html_entity_decode($content_clean, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         
-        // Filter by frequency (minimum 5 occurrences)
+        if (strlen($content_clean) > 500000) {
+            $content_clean = substr($content_clean, 0, 500000);
+        }
+
+        // Build a list of known proper noun strings for fragment detection (include frequent trigrams).
+        $known_names = array_merge($proper_nouns, $capitalize_terms);
+        $known_names = array_merge($known_names, $this->extract_frequent_titlecase_trigrams($content_clean));
+        $known_names_lower = array_map('strtolower', $known_names);
+
+        $words = preg_split('/\s+/', $content_clean);
+        $raw_phrases = array();
+
+        for ($i = 0; $i < count($words) - 1; $i++) {
+            $w1 = trim($words[$i], '.,;:!?"\'()[]{}–—-…');
+            $w2 = trim($words[$i + 1], '.,;:!?"\'()[]{}–—-…');
+            $w1 = preg_replace("/[''']s$/", '', $w1);
+            $w2 = preg_replace("/[''']s$/", '', $w2);
+            if (strlen($w1) >= 4 && strlen($w2) >= 4) {
+                $raw_phrases[] = $w1 . ' ' . $w2;
+            }
+            // Acronym + word (e.g. "FPMT organization") — tracked so we can drop the noisy pair later.
+            if (strlen($w1) >= 2 && strlen($w1) <= 12 && preg_match('/^[A-Z]{2,12}$/', $w1) && strlen($w2) >= 4) {
+                $raw_phrases[] = $w1 . ' ' . $w2;
+            }
+        }
+
+        $frequency = array_count_values($raw_phrases);
+
         $frequency = array_filter($frequency, function($count) {
-            return $count >= 5;
+            return $count >= 18;
         });
-        
-        // Additional filter: remove any remaining code-like patterns
-        $frequency = array_filter($frequency, function($count, $phrase) {
-            // Skip if contains numbers
-            if (preg_match('/\d/', $phrase)) {
-                return false;
+
+        $filtered = array();
+        $generic_words = array('the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'been',
+            'will', 'would', 'could', 'should', 'about', 'which', 'their', 'there', 'when',
+            'where', 'what', 'your', 'more', 'some', 'than', 'into', 'very', 'also', 'just',
+            'only', 'other', 'such', 'make', 'many', 'over', 'know', 'like', 'need', 'want',
+            'read', 'click', 'here', 'view', 'post', 'page', 'site',
+            'you', 'are', 'who', 'has', 'was', 'were', 'had', 'can', 'may', 'did', 'does',
+            'its', 'our', 'per', 'not', 'how', 'why', 'but', 'nor', 'yet', 'all', 'any',
+            'each', 'both', 'own', 'her', 'his', 'she', 'him', 'they', 'them', 'then',
+            'now', 'still', 'even', 'well', 'too', 'much', 'most', 'less', 'few', 'same',
+            'new', 'old', 'good', 'best', 'last', 'next', 'first', 'being', 'having',
+            'doing', 'going', 'using', 'made', 'take', 'give', 'come', 'keep', 'help',
+            'photo', 'image', 'courtesy', 'please', 'thank', 'dear', 'dedicated', 'via',
+            'org', 'part', 'way', 'one', 'two', 'day', 'time', 'year', 'work', 'life',
+            'after', 'before', 'between', 'through', 'during', 'since', 'until',
+            'based', 'able', 'available', 'different', 'important', 'those', 'these',
+            'values', 'worldwide', 'teaching', 'learn', 'learning', 'become', 'becoming',
+            'wisdom', 'sacred', 'holy', 'divine', 'spiritual', 'peace', 'peaceful');
+
+        foreach ($frequency as $phrase => $count) {
+            $lower = strtolower($phrase);
+
+            if (preg_match('/\d/', $phrase)) continue;
+            if (strlen($phrase) > 32) continue;
+            if (preg_match("/'s\\b/u", $phrase) || preg_match('/\sorganization$/iu', $phrase)) {
+                continue;
             }
-            // Skip very long phrases (likely code)
-            if (strlen($phrase) > 40) {
-                return false;
+            if ($this->is_code_pattern($lower)) continue;
+
+            $pwords = explode(' ', $lower);
+            $generic = false;
+            foreach ($pwords as $pw) {
+                if (in_array($pw, $generic_words) || strlen($pw) < 4) {
+                    $generic = true;
+                    break;
+                }
             }
-            return true;
-        }, ARRAY_FILTER_USE_BOTH);
-        
-        arsort($frequency);
-        
-        return array_keys(array_slice($frequency, 0, 30));
+            if ($generic) continue;
+
+            // Skip if this phrase is a substring of any known proper noun
+            $is_name_fragment = false;
+            foreach ($known_names_lower as $name) {
+                if (strlen($name) > strlen($lower) && stripos($name, $lower) !== false) {
+                    $is_name_fragment = true;
+                    break;
+                }
+            }
+            if ($is_name_fragment) continue;
+
+            $filtered[$phrase] = $count;
+        }
+
+        arsort($filtered);
+
+        $candidates = array_keys(array_slice($filtered, 0, 15));
+
+        return $this->refine_common_phrases_list($candidates, $content_clean);
     }
     
     /**
-     * Extract key entities from content samples (people, locations, programs)
+     * Legacy hook: pattern-based “preferred term” extraction.
+     *
+     * Previously this returned long multi-word proper nouns from titles/content.
+     * Those are not valid “preferred term” rules without a real short→long editorial
+     * pair, so the wizard imported post titles and person names as garbage rows.
+     * Real preferred_term rules come from AI (avoid + preferred). This returns none.
+     *
+     * @param string $content All post content combined
+     * @param array  $titles Post titles
+     * @return array Always empty
+     */
+    private function find_preferred_terms($content, $titles) {
+        return array();
+    }
+
+    /**
+     * Find avoid terms — shortened or partial name forms that should be
+     * replaced with their full preferred version.
+     *
+     * For example, if content uses both "Smith" alone and "Dr. John Smith",
+     * the short form should be flagged with the full form as the preferred replacement.
+     *
+     * @param string $content All post content combined
+     * @param array $preferred_terms Already-detected preferred terms
+     * @return array Each element: ['avoid' => short form, 'preferred' => full form]
+     */
+    /**
+     * Pattern-based avoid terms are disabled — they produced low-quality
+     * "partial name → full name" rules that aren't real avoid terms.
+     * Genuine avoid terms (e.g. "church" → "center") are handled by
+     * the AI semantic rules in ai_generate_guidelines().
+     */
+    private function find_avoid_terms($content, $preferred_terms) {
+        return array();
+    }
+
+    /**
+     * Extract key entities from content samples (people, organizations, topics)
+     *
+     * Uses a universal approach: detects multi-word proper noun phrases by
+     * capitalization patterns and frequency, rather than relying on hardcoded
+     * title prefixes. Works for any niche or naming convention.
      *
      * @param array $samples Content samples
+     * @param array $all_titles Optional array of ALL post titles for broader scanning
      * @return array Extracted entities
      */
-    private function extract_site_entities($samples) {
+    private function extract_site_entities($samples, $all_titles = array()) {
         $entities = array(
             'people' => array(),
             'locations' => array(),
-            'programs' => array()
+            'programs' => array(),
+            'key_terms' => array(),
+            'categories_with_counts' => array(),
+            'tags_with_counts' => array(),
         );
         
         $all_text = '';
         foreach ($samples as $sample) {
             $all_text .= ' ' . $sample['title'] . ' ' . $sample['excerpt'];
         }
-        
-        // Extract people (titles like Geshe, Lama, Rinpoche, Venerable, etc.)
-        $people_patterns = array(
-            '/\b(Geshe|Lama|Rinpoche|Venerable|His Holiness|Her Holiness)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/',
-            '/\b([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(Rinpoche|Geshe)\b/',
-        );
-        
-        foreach ($people_patterns as $pattern) {
-            if (preg_match_all($pattern, $all_text, $matches)) {
-                foreach ($matches[0] as $match) {
-                    $clean = trim($match);
-                    if (!in_array($clean, $entities['people'])) {
-                        $entities['people'][] = $clean;
+        if (!empty($all_titles)) {
+            $titles_for_scan = array_slice($all_titles, 0, 400);
+            $all_text .= ' ' . implode('. ', $titles_for_scan);
+        }
+
+        $proper_noun_counts = array();
+        $blocklist = array('Please Enjoy', 'Read More', 'Click Here', 'Learn More',
+            'Find Out', 'Check Out', 'Sign Up', 'Join Us', 'New York',
+            'Share This', 'Leave Reply', 'Filed Under', 'Posted',
+            'Continue Reading', 'View All', 'Load More',
+            'Previous Post', 'Next Post', 'Related Posts', 'Recent Posts',
+            'No Comments', 'Leave Comment', 'Your Email');
+        $title_start_words = array('news', 'regarding', 'our', 'second', 'offer',
+            'update', 'report', 'annual', 'monthly', 'stories', 'newsletter',
+            'how', 'why', 'what', 'when', 'where', 'weekly', 'daily',
+            'latest', 'recent', 'upcoming', 'welcome', 'introducing',
+            'announcing', 'special', 'important', 'notice',
+            'the', 'an', 'a', 'its', 'his', 'her', 'this', 'that');
+        $common_last_words = array('continue', 'continues', 'continued', 'update', 'updates',
+            'updated', 'needed', 'begins', 'started', 'starts', 'ends', 'ended', 'opens',
+            'opened', 'closed', 'review', 'reviewed', 'submit', 'available', 'upcoming',
+            'report', 'reported', 'selected', 'completed', 'announced', 'published',
+            'received', 'presented', 'offered', 'included', 'featured', 'released');
+
+        if (preg_match_all('/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})\b/', $all_text, $pn_matches)) {
+            foreach ($pn_matches[0] as $phrase) {
+                $phrase = trim($phrase);
+                if (strlen($phrase) < 5) continue;
+
+                $blocked = false;
+                foreach ($blocklist as $bl) {
+                    if (stripos($phrase, $bl) !== false) { $blocked = true; break; }
+                }
+                if ($blocked) continue;
+
+                $phrase_words = explode(' ', $phrase);
+                $first_word = strtolower($phrase_words[0]);
+                if (in_array($first_word, $title_start_words)) continue;
+
+                $last_word = end($phrase_words);
+                if (strlen($last_word) <= 3) continue;
+                if (in_array(strtolower($last_word), $common_last_words)) continue;
+
+                if (!isset($proper_noun_counts[$phrase])) {
+                    $proper_noun_counts[$phrase] = 0;
+                }
+                $proper_noun_counts[$phrase]++;
+            }
+        }
+
+        $acronyms = array();
+        if (preg_match_all('/\b([A-Z]{2,10})\b/', $all_text, $acr_matches)) {
+            foreach ($acr_matches[0] as $acr) {
+                $skip = array('HTML', 'CSS', 'PHP', 'URL', 'HTTP', 'HTTPS', 'RSS', 'API', 'XML', 'JSON', 'PDF', 'ID', 'OK');
+                if (in_array($acr, $skip)) continue;
+                if (!isset($acronyms[$acr])) {
+                    $acronyms[$acr] = 0;
+                }
+                $acronyms[$acr]++;
+            }
+        }
+
+        uksort($proper_noun_counts, function($a, $b) use ($proper_noun_counts) {
+            $len_diff = strlen($b) - strlen($a);
+            if ($len_diff !== 0) return $len_diff;
+            return $proper_noun_counts[$b] - $proper_noun_counts[$a];
+        });
+        $org_suffixes = array('fund', 'centre', 'center', 'project', 'college',
+            'school', 'monastery', 'nunnery', 'temple', 'institute', 'foundation',
+            'association', 'society', 'trust', 'program', 'programme', 'initiative',
+            'retreat', 'pilgrimage', 'mantras', 'puja', 'teachers', 'committee',
+            'council', 'board', 'network', 'alliance', 'organization', 'charity',
+            'leeds', 'london', 'bodhichitta', 'sangha', 'gonpa', 'gompa');
+        $deduped = array();
+        $deduped_counts = array();
+        foreach (array_keys($proper_noun_counts) as $phrase) {
+            if ($proper_noun_counts[$phrase] < 2) continue;
+            $dominated = false;
+            foreach ($deduped as $existing) {
+                if (stripos($existing, $phrase) !== false) {
+                    if ($proper_noun_counts[$phrase] > $proper_noun_counts[$existing] * 1.5) {
+                        break;
                     }
+                    $extra_text = trim(str_ireplace($phrase, '', $existing));
+                    $extra_words = array_filter(explode(' ', strtolower($extra_text)));
+                    $has_org_suffix = false;
+                    foreach ($extra_words as $ew) {
+                        if (in_array($ew, $org_suffixes)) { $has_org_suffix = true; break; }
+                    }
+                    if ($has_org_suffix) {
+                        break;
+                    }
+                    $dominated = true;
+                    break;
                 }
             }
-        }
-        
-        // Extract locations (common city names, countries)
-        $location_words = array('London', 'UK', 'United Kingdom', 'England', 'Scotland', 'Wales', 'Ireland', 
-                                'Manchester', 'Edinburgh', 'Bristol', 'Leeds', 'Birmingham', 'Cambridge', 'Oxford',
-                                'New York', 'California', 'Sydney', 'Melbourne', 'Toronto', 'Vancouver');
-        
-        foreach ($location_words as $location) {
-            if (stripos($all_text, $location) !== false) {
-                if (!in_array($location, $entities['locations'])) {
-                    $entities['locations'][] = $location;
-                }
+            if (!$dominated) {
+                $deduped[] = $phrase;
+                $deduped_counts[$phrase] = $proper_noun_counts[$phrase];
             }
         }
-        
-        // Extract programs/categories from WordPress categories and tags
-        $categories = get_categories(array('hide_empty' => false));
+        arsort($deduped_counts);
+        $entities['people'] = array_slice($deduped_counts, 0, 25, true);
+
+        arsort($acronyms);
+        $acr_with_counts = array();
+        foreach ($acronyms as $acr => $count) {
+            if ($count >= 3) {
+                $acr_with_counts[$acr] = $count;
+            }
+        }
+        $entities['key_terms'] = array_slice($acr_with_counts, 0, 10, true);
+
+        $categories = get_categories(array('hide_empty' => true, 'orderby' => 'count', 'order' => 'DESC'));
         foreach ($categories as $category) {
-            if ($category->slug !== 'uncategorized') {
+            if ($category->slug !== 'uncategorized' && $category->count > 0) {
+                $entities['categories_with_counts'][$category->name] = $category->count;
                 $entities['programs'][] = $category->name;
             }
         }
-        
-        // Also check post types registered (like courses, events)
+
+        $tags = get_tags(array('hide_empty' => true, 'orderby' => 'count', 'order' => 'DESC', 'number' => 50));
+        if (!empty($tags) && !is_wp_error($tags)) {
+            foreach ($tags as $tag) {
+                $entities['tags_with_counts'][$tag->name] = $tag->count;
+                $entities['programs'][] = $tag->name;
+            }
+        }
+
         $post_types = get_post_types(array('public' => true, '_builtin' => false), 'objects');
         foreach ($post_types as $post_type) {
-            // Skip system post types
             if (!in_array($post_type->name, array('attachment', 'revision', 'nav_menu_item'))) {
                 $entities['programs'][] = $post_type->labels->name;
             }
         }
-        
-        // Limit to most relevant
-        $entities['people'] = array_slice(array_unique($entities['people']), 0, 5);
-        $entities['locations'] = array_slice(array_unique($entities['locations']), 0, 3);
-        $entities['programs'] = array_slice(array_unique($entities['programs']), 0, 10);
+
+        $entities['programs'] = array_slice(array_unique($entities['programs']), 0, 30);
         
         return $entities;
     }

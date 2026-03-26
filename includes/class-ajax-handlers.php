@@ -55,76 +55,117 @@ class MFSEO_AJAX_Handlers {
         
         // Custom prompts
         add_action('wp_ajax_mindfulseo_save_custom_prompt', array(__CLASS__, 'save_custom_prompt'));
+        
+        // Dashboard (v2.0)
+        add_action('wp_ajax_mindfulseo_refresh_dashboard', array(__CLASS__, 'refresh_dashboard'));
+        
+        // Content Hub (v2.0)
+        add_action('wp_ajax_mindfulseo_refresh_clusters', array(__CLASS__, 'refresh_clusters'));
+        add_action('wp_ajax_mindfulseo_suggest_pillar', array(__CLASS__, 'suggest_pillar'));
+        add_action('wp_ajax_mindfulseo_generate_gap_suggestions', array(__CLASS__, 'generate_gap_suggestions'));
+        add_action('wp_ajax_mindfulseo_analyze_internal_links', array(__CLASS__, 'analyze_internal_links'));
+        add_action('wp_ajax_mindfulseo_scan_broken_links', array(__CLASS__, 'scan_broken_links'));
     }
     
     /**
      * Test OpenAI connection via AJAX
      */
     public static function test_openai_connection() {
+        // Swallow any stray PHP notices/warnings that would corrupt the JSON response
+        ob_start();
+
         check_ajax_referer('mindfulseo_test_api', 'nonce');
-        
+
         if (!current_user_can('manage_options')) {
+            ob_end_clean();
             wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
         }
-        
-        $api_key = isset($_POST['api_key']) ? sanitize_text_field($_POST['api_key']) : '';
-        $model = isset($_POST['model']) ? sanitize_text_field($_POST['model']) : 'gpt-3.5-turbo';
-        
-        // If key is empty or just dots (masked value), use saved key
-        if (empty($api_key) || strpos($api_key, '•••') !== false) {
+
+        $api_key    = isset($_POST['api_key']) ? sanitize_text_field($_POST['api_key']) : '';
+        $model      = isset($_POST['model'])   ? sanitize_text_field($_POST['model'])   : 'gpt-4o';
+        $api_key    = is_string($api_key) ? $api_key : '';
+        $using_saved = false;
+
+        if (empty($api_key) || strpos($api_key, '•') !== false) {
+            $using_saved = true;
             $settings = get_option('mindfulseo_settings', array());
-            $api_key = isset($settings['openai_api_key']) ? $settings['openai_api_key'] : '';
-            
-            // Decrypt the saved key
+            $api_key  = isset($settings['openai_api_key']) ? $settings['openai_api_key'] : '';
             if (!empty($api_key) && class_exists('MFSEO_AI_Connector')) {
-                $connector = MFSEO_AI_Connector::get_instance();
-                $api_key = $connector->decrypt_api_key($api_key);
+                $api_key = MFSEO_AI_Connector::get_instance()->decrypt_api_key($api_key);
             }
         }
-        
+
+        if (empty($api_key)) {
+            ob_end_clean();
+            wp_send_json_error(array(
+                'message' => __('No API key found. Save your key in Settings first, then test.', 'mindfulseo'),
+                'code'    => 'no_key',
+            ));
+        }
+
         $result = MFSEO_API_Tester::test_openai_connection($api_key, $model);
-        
+
+        if (is_wp_error($result) && $using_saved) {
+            $result = new WP_Error(
+                $result->get_error_code(),
+                $result->get_error_message() . ' — testing saved key. If you just changed it, click Save Settings first.'
+            );
+        }
+
+        ob_end_clean();
+
         if (is_wp_error($result)) {
             wp_send_json_error(array(
                 'message' => $result->get_error_message(),
-                'code' => $result->get_error_code()
+                'code'    => $result->get_error_code(),
             ));
         } else {
             wp_send_json_success($result);
         }
     }
-    
+
     /**
      * Test Claude connection via AJAX
      */
     public static function test_claude_connection() {
+        // Swallow any stray PHP notices/warnings that would corrupt the JSON response
+        ob_start();
+
         check_ajax_referer('mindfulseo_test_api', 'nonce');
-        
+
         if (!current_user_can('manage_options')) {
+            ob_end_clean();
             wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
         }
-        
+
         $api_key = isset($_POST['api_key']) ? sanitize_text_field($_POST['api_key']) : '';
-        $model = isset($_POST['model']) ? sanitize_text_field($_POST['model']) : 'claude-3-haiku-20240307';
-        
-        // If key is empty or just dots (masked value), use saved key
-        if (empty($api_key) || strpos($api_key, '•••') !== false) {
+        $model   = isset($_POST['model'])   ? sanitize_text_field($_POST['model'])   : 'claude-sonnet-4-5';
+        $api_key = is_string($api_key) ? $api_key : '';
+
+        if (empty($api_key) || strpos($api_key, '•') !== false) {
             $settings = get_option('mindfulseo_settings', array());
-            $api_key = isset($settings['claude_api_key']) ? $settings['claude_api_key'] : '';
-            
-            // Decrypt the saved key
+            $api_key  = isset($settings['claude_api_key']) ? $settings['claude_api_key'] : '';
             if (!empty($api_key) && class_exists('MFSEO_AI_Connector')) {
-                $connector = MFSEO_AI_Connector::get_instance();
-                $api_key = $connector->decrypt_api_key($api_key);
+                $api_key = MFSEO_AI_Connector::get_instance()->decrypt_api_key($api_key);
             }
         }
-        
+
+        if (empty($api_key)) {
+            ob_end_clean();
+            wp_send_json_error(array(
+                'message' => __('No API key found. Save your key in Settings first, then test.', 'mindfulseo'),
+                'code'    => 'no_key',
+            ));
+        }
+
         $result = MFSEO_API_Tester::test_claude_connection($api_key, $model);
-        
+
+        ob_end_clean();
+
         if (is_wp_error($result)) {
             wp_send_json_error(array(
                 'message' => $result->get_error_message(),
-                'code' => $result->get_error_code()
+                'code'    => $result->get_error_code(),
             ));
         } else {
             wp_send_json_success($result);
@@ -145,7 +186,7 @@ class MFSEO_AJAX_Handlers {
         $openai_key = isset($settings['openai_api_key']) ? $settings['openai_api_key'] : '';
         $claude_key = isset($settings['claude_api_key']) ? $settings['claude_api_key'] : '';
         $openai_model = isset($settings['openai_model']) ? $settings['openai_model'] : 'gpt-3.5-turbo';
-        $claude_model = isset($settings['claude_model']) ? $settings['claude_model'] : 'claude-3-haiku-20240307';
+        $claude_model = isset($settings['claude_model']) ? $settings['claude_model'] : 'claude-sonnet-4-5';
         
         $results = MFSEO_API_Tester::test_all_connections($openai_key, $claude_key, $openai_model, $claude_model);
         
@@ -162,25 +203,73 @@ class MFSEO_AJAX_Handlers {
             wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
         }
         
+        @set_time_limit(300);
+        
         $post_types = isset($_POST['post_types']) ? array_map('sanitize_text_field', $_POST['post_types']) : array('post');
         $limit = isset($_POST['limit']) ? intval($_POST['limit']) : 50;
+        $deep_analysis = !empty($_POST['deep_analysis']);
         
-        $analyzer = new MFSEO_Content_Analyzer();
-        $suggestions = $analyzer->analyze_for_keywords(array(
-            'post_types' => $post_types,
-            'limit' => $limit
-        ));
-        
-        if (empty($suggestions)) {
+        try {
+            $analyzer = new MFSEO_Content_Analyzer();
+            $suggestions = $analyzer->analyze_for_keywords(array(
+                'post_types' => $post_types,
+                'limit' => $limit,
+                'deep_analysis' => $deep_analysis,
+                'ai_usage_context' => 'keywords_page_autogenerate',
+            ));
+            
+            if (is_wp_error($suggestions)) {
+                wp_send_json_error(array('message' => $suggestions->get_error_message()));
+            }
+            
+            if (empty($suggestions)) {
+                wp_send_json_error(array(
+                    'message' => __('No keywords found. Try analyzing more posts or different post types.', 'mindfulseo')
+                ));
+            }
+            
+            $keyword_manager = MFSEO_Keyword_Manager::get_instance();
+            $imported = 0;
+            $skipped = 0;
+            
+            foreach ($suggestions as $suggestion) {
+                $result = $keyword_manager->add_keyword(array(
+                    'primary_keyword' => $suggestion['primary_keyword'],
+                    'longtail_keyword' => isset($suggestion['longtail_keyword']) ? $suggestion['longtail_keyword'] : '',
+                    'search_intent' => isset($suggestion['search_intent']) ? $suggestion['search_intent'] : '',
+                    'priority' => isset($suggestion['priority']) ? $suggestion['priority'] : 'Medium',
+                    'current_sessions' => isset($suggestion['frequency']) ? $suggestion['frequency'] : 0,
+                    'notes' => 'Auto-generated from content analysis',
+                    'csv_source' => 'Auto-generated'
+                ));
+                if (!is_wp_error($result)) {
+                    $imported++;
+                } elseif ($result->get_error_code() === 'duplicate_keyword') {
+                    $skipped++;
+                }
+            }
+            
+            if ($imported > 0) {
+                $message = sprintf(__('Successfully analyzed content and imported %d keyword suggestions!', 'mindfulseo'), $imported);
+                if ($skipped > 0) {
+                    $message .= ' ' . sprintf(__('(%d duplicates skipped)', 'mindfulseo'), $skipped);
+                }
+            } else {
+                $message = __('All suggested keywords already exist in your database.', 'mindfulseo');
+            }
+            
+            wp_send_json_success(array(
+                'message' => $message,
+                'imported' => $imported,
+                'skipped' => $skipped,
+                'total' => count($suggestions)
+            ));
+        } catch (\Throwable $e) {
+            error_log('MindfulSEO autogenerate_keywords error: ' . $e->getMessage());
             wp_send_json_error(array(
-                'message' => __('No keywords found. Try analyzing more posts or different post types.', 'mindfulseo')
+                'message' => __('Server error: ', 'mindfulseo') . $e->getMessage()
             ));
         }
-        
-        wp_send_json_success(array(
-            'suggestions' => $suggestions,
-            'count' => count($suggestions)
-        ));
     }
     
     /**
@@ -193,24 +282,168 @@ class MFSEO_AJAX_Handlers {
             wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
         }
         
+        @set_time_limit(300);
+        
         $post_types = isset($_POST['post_types']) ? array_map('sanitize_text_field', $_POST['post_types']) : array('post');
         $limit = isset($_POST['limit']) ? intval($_POST['limit']) : 100;
         
-        $analyzer = new MFSEO_Content_Analyzer();
-        $suggestions = $analyzer->analyze_for_guidelines(array(
-            'post_types' => $post_types,
-            'limit' => $limit
-        ));
-        
-        if (empty($suggestions)) {
+        try {
+            $analyzer = new MFSEO_Content_Analyzer();
+            $suggestions = $analyzer->analyze_for_guidelines(array(
+                'post_types' => $post_types,
+                'limit' => $limit,
+                'ai_usage_context' => 'guidelines_page_autogenerate',
+            ));
+            
+            if (is_wp_error($suggestions)) {
+                wp_send_json_error(array('message' => $suggestions->get_error_message()));
+            }
+            
+            if (empty($suggestions)) {
+                wp_send_json_error(array(
+                    'message' => __('No patterns found. Try analyzing more posts or different post types.', 'mindfulseo')
+                ));
+            }
+            
+            $guidelines_engine = class_exists('MFSEO_Guidelines_Engine') ? MFSEO_Guidelines_Engine::get_instance() : null;
+            if (!$guidelines_engine) {
+                wp_send_json_error(array('message' => __('Guidelines engine not available.', 'mindfulseo')));
+            }
+            
+            $imported = 0;
+
+            // Match Language Guidelines → Auto-Generate (form POST in class-admin-page.php):
+            // pattern capitalize first, then full AI mix (avoid / capitalize / preferred_term / seo_friendly),
+            // then pattern fallbacks only when AI did not return rules.
+
+            if (!empty($suggestions['capitalize_terms'])) {
+                foreach ($suggestions['capitalize_terms'] as $term) {
+                    $result = $guidelines_engine->add_rule(array(
+                        'rule_type' => 'capitalize',
+                        'avoid_term' => strtolower($term),
+                        'preferred_term' => $term,
+                        'context' => 'Auto-generated from content analysis',
+                        'guideline_source' => 'Auto-generated',
+                        'active' => true,
+                    ));
+                    if (!is_wp_error($result)) {
+                        $imported++;
+                    }
+                }
+            }
+
+            if (!empty($suggestions['ai_guidelines'])) {
+                $ai_rule_types = array('avoid_term', 'capitalize', 'preferred_term', 'seo_friendly');
+                foreach ($suggestions['ai_guidelines'] as $ai_rule) {
+                    $rule_type = isset($ai_rule['type']) ? sanitize_key($ai_rule['type']) : '';
+                    $avoid     = isset($ai_rule['avoid']) ? $ai_rule['avoid'] : '';
+                    $preferred = isset($ai_rule['preferred']) ? $ai_rule['preferred'] : '';
+                    $context   = !empty($ai_rule['context']) ? $ai_rule['context'] : 'AI-generated';
+
+                    if (!in_array($rule_type, $ai_rule_types, true) || $preferred === '') {
+                        continue;
+                    }
+
+                    if ($rule_type === 'capitalize' && $avoid === '') {
+                        $avoid = strtolower($preferred);
+                    }
+
+                    $result = $guidelines_engine->add_rule(array(
+                        'rule_type' => $rule_type,
+                        'avoid_term' => $avoid,
+                        'preferred_term' => $preferred,
+                        'context' => $context,
+                        'guideline_source' => 'AI-generated',
+                        'active' => true,
+                    ));
+                    if (!is_wp_error($result)) {
+                        $imported++;
+                    }
+                }
+            }
+
+            if (empty($suggestions['ai_succeeded'])) {
+                if (!empty($suggestions['preferred_terms'])) {
+                    foreach ($suggestions['preferred_terms'] as $term) {
+                        $result = $guidelines_engine->add_rule(array(
+                            'rule_type' => 'preferred_term',
+                            'avoid_term' => '',
+                            'preferred_term' => $term,
+                            'context' => 'Auto-generated from content analysis',
+                            'guideline_source' => 'Auto-generated',
+                            'active' => true,
+                        ));
+                        if (!is_wp_error($result)) {
+                            $imported++;
+                        }
+                    }
+                }
+
+                if (!empty($suggestions['avoid_terms'])) {
+                    foreach ($suggestions['avoid_terms'] as $avoid_rule) {
+                        $result = $guidelines_engine->add_rule(array(
+                            'rule_type' => 'avoid_term',
+                            'avoid_term' => $avoid_rule['avoid'],
+                            'preferred_term' => $avoid_rule['preferred'],
+                            'context' => 'Auto-generated from content analysis',
+                            'guideline_source' => 'Auto-generated',
+                            'active' => true,
+                        ));
+                        if (!is_wp_error($result)) {
+                            $imported++;
+                        }
+                    }
+                }
+
+                if (!empty($suggestions['common_phrases'])) {
+                    foreach (array_slice($suggestions['common_phrases'], 0, 15) as $phrase) {
+                        $result = $guidelines_engine->add_rule(array(
+                            'rule_type' => 'seo_friendly',
+                            'avoid_term' => '',
+                            'preferred_term' => $phrase,
+                            'context' => 'Common phrase from content analysis',
+                            'guideline_source' => 'Auto-generated',
+                            'active' => true,
+                        ));
+                        if (!is_wp_error($result)) {
+                            $imported++;
+                        }
+                    }
+                }
+
+                if (!empty($suggestions['semantic_avoid_terms'])) {
+                    foreach ($suggestions['semantic_avoid_terms'] as $semantic_rule) {
+                        $result = $guidelines_engine->add_rule(array(
+                            'rule_type' => 'avoid_term',
+                            'avoid_term' => $semantic_rule['avoid'],
+                            'preferred_term' => $semantic_rule['preferred'],
+                            'context' => !empty($semantic_rule['context']) ? $semantic_rule['context'] : 'AI-generated domain-specific rule',
+                            'guideline_source' => 'AI-generated',
+                            'active' => true,
+                        ));
+                        if (!is_wp_error($result)) {
+                            $imported++;
+                        }
+                    }
+                }
+            }
+            
+            if ($imported > 0) {
+                $message = sprintf(__('Successfully analyzed content and imported %d guideline suggestions!', 'mindfulseo'), $imported);
+            } else {
+                $message = __('Analysis complete but no new guidelines were generated. Your content patterns may already be covered.', 'mindfulseo');
+            }
+            
+            wp_send_json_success(array(
+                'message' => $message,
+                'imported' => $imported
+            ));
+        } catch (\Throwable $e) {
+            error_log('MindfulSEO autogenerate_guidelines error: ' . $e->getMessage());
             wp_send_json_error(array(
-                'message' => __('No patterns found. Try analyzing more posts or different post types.', 'mindfulseo')
+                'message' => __('Server error: ', 'mindfulseo') . $e->getMessage()
             ));
         }
-        
-        wp_send_json_success(array(
-            'suggestions' => $suggestions
-        ));
     }
     
     /**
@@ -255,6 +488,24 @@ class MFSEO_AJAX_Handlers {
         }
         
         $keyword_manager = MFSEO_Keyword_Manager::get_instance();
+
+        // If group_ids are provided (parent row edit), update all rows in the group
+        $group_ids = isset($_POST['group_ids']) ? $_POST['group_ids'] : '';
+        if (!empty($group_ids) && $field === 'primary_keyword') {
+            $ids = array_filter(array_map('intval', explode(',', $group_ids)));
+            $updated = 0;
+            foreach ($ids as $gid) {
+                if ($keyword_manager->update_keyword($gid, array($field => $value))) {
+                    $updated++;
+                }
+            }
+            wp_send_json_success(array(
+                'message' => sprintf(__('Updated %d keywords', 'mindfulseo'), $updated),
+                'value' => $value
+            ));
+            return;
+        }
+
         $result = $keyword_manager->update_keyword($keyword_id, array($field => $value));
         
         if ($result) {
@@ -385,7 +636,10 @@ class MFSEO_AJAX_Handlers {
             $prompt = self::build_smart_cleanup_prompt($keyword_list, $settings);
             
             error_log('MindfulSEO: Calling AI with prompt');
-            $response = $ai_connector->generate_content($prompt, array('max_tokens' => 4000));
+            $response = $ai_connector->generate_content($prompt, array(
+                'max_tokens' => 4000,
+                'usage_context' => 'keyword_strategy_ai_cleanup',
+            ));
             error_log('MindfulSEO: AI response received');
             
             if (is_wp_error($response)) {
@@ -396,8 +650,12 @@ class MFSEO_AJAX_Handlers {
             // Parse AI response
             error_log('MindfulSEO: Parsing AI response');
             
+            // Ensure response is a string (PHP 8.x compatibility)
+            $response = is_string($response) ? $response : '';
+            
             // Strip markdown code blocks if present
-            $response = trim($response);
+            // PHP 8.x: Ensure $response is a string
+            $response = is_string($response) ? trim($response) : '';
             if (strpos($response, '```json') === 0) {
                 $response = preg_replace('/^```json\s*/', '', $response);
                 $response = preg_replace('/\s*```$/', '', $response);
@@ -451,6 +709,10 @@ class MFSEO_AJAX_Handlers {
         $login = isset($_POST['login']) ? sanitize_email($_POST['login']) : '';
         $password = isset($_POST['password']) ? sanitize_text_field($_POST['password']) : '';
         
+        // PHP 8.x: Ensure strings before strpos
+        $login = is_string($login) ? $login : '';
+        $password = is_string($password) ? $password : '';
+        
         // If login/password is empty or just dots (masked value), use saved credentials
         if (empty($login) || empty($password) || strpos($password, '•••') !== false || strpos($login, '•••') !== false) {
             $settings = get_option('mindfulseo_settings', array());
@@ -502,7 +764,25 @@ class MFSEO_AJAX_Handlers {
             wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
         }
         
-        // Check if DataForSEO is configured
+        // Check if DataForSEO is configured (check settings FIRST before initializing connector)
+        $settings = get_option('mindfulseo_settings', array());
+        $dataforseo_configured = !empty($settings['dataforseo_login']) && !empty($settings['dataforseo_password']);
+        
+        if (!$dataforseo_configured) {
+            error_log('MindfulSEO: DataForSEO not configured - returning info message');
+            wp_send_json_success(array(
+                'message' => __(
+                    'ℹ️ DataForSEO is not set up yet. Keywords will work without metrics. ' .
+                    'To add search volume and difficulty data, configure DataForSEO in the Setup Wizard (Step 2) or in Settings → API Configuration.',
+                    'mindfulseo'
+                ),
+                'updated' => 0,
+                'total' => 0,
+                'with_data' => 0,
+                'info_only' => true
+            ));
+        }
+        
         if (!class_exists('MFSEO_DataForSEO_Connector')) {
             error_log('MindfulSEO: DataForSEO connector class not found');
             wp_send_json_error(array('message' => __('DataForSEO connector not available', 'mindfulseo')));
@@ -512,8 +792,8 @@ class MFSEO_AJAX_Handlers {
         $connector = MFSEO_DataForSEO_Connector::get_instance();
         
         if (!$connector->is_configured()) {
-            error_log('MindfulSEO: DataForSEO not configured');
-            wp_send_json_error(array('message' => __('DataForSEO API not configured. Please add your credentials in Settings.', 'mindfulseo')));
+            error_log('MindfulSEO: DataForSEO connector reports not configured');
+            wp_send_json_error(array('message' => __('DataForSEO API configuration error. Please check your credentials in Settings.', 'mindfulseo')));
         }
         
         error_log('MindfulSEO: DataForSEO is configured, continuing...');
@@ -531,100 +811,216 @@ class MFSEO_AJAX_Handlers {
             wp_send_json_error(array('message' => __('No keywords found to refresh', 'mindfulseo')));
         }
         
-        // Extract keyword strings (primary keywords only for now)
-        $keyword_strings = array();
-        $keyword_map = array(); // Map primary keyword => ID
+        // Collect ALL unique keywords (both primary and longtail) for API lookup.
+        // Each row's DB columns will store its longtail's metrics.
+        // Primary keyword metrics are saved separately in a WP option for the grouped table.
+        $all_strings    = array();   // deduped list of all keyword strings to send
+        $all_seen       = array();   // lowercase => original string (dedup tracker)
+        $longtail_to_ids = array();  // lowercase longtail => array of row IDs
+        $primary_ids     = array();  // lowercase primary => true (just track which are primaries)
+
         foreach ($keywords as $keyword) {
-            $keyword_strings[] = $keyword->primary_keyword;
-            $keyword_map[$keyword->primary_keyword] = $keyword->id;
+            $pk = trim($keyword->primary_keyword);
+            $lt = trim($keyword->longtail_keyword);
+            if (empty($pk) && empty($lt)) {
+                continue;
+            }
+
+            // Track the longtail (or primary as fallback) for this row's DB update
+            $row_kw = !empty($lt) ? $lt : $pk;
+            $row_key = strtolower($row_kw);
+            if (!isset($longtail_to_ids[$row_key])) {
+                $longtail_to_ids[$row_key] = array();
+            }
+            $longtail_to_ids[$row_key][] = $keyword->id;
+
+            // Add both primary and longtail to the combined deduped list
+            if (!empty($pk)) {
+                $pk_key = strtolower($pk);
+                $primary_ids[$pk_key] = true;
+                if (!isset($all_seen[$pk_key])) {
+                    $all_seen[$pk_key] = $pk;
+                    $all_strings[] = $pk;
+                }
+            }
+            if (!empty($lt) && strtolower($lt) !== strtolower($pk)) {
+                $lt_key = strtolower($lt);
+                if (!isset($all_seen[$lt_key])) {
+                    $all_seen[$lt_key] = $lt;
+                    $all_strings[] = $lt;
+                }
+            }
         }
-        
+
         // Get settings for location and language
         $settings = get_option('mindfulseo_settings', array());
         $location_code = isset($settings['dataforseo_location']) ? $settings['dataforseo_location'] : '2840';
         $language_code = isset($settings['dataforseo_language']) ? $settings['dataforseo_language'] : 'en';
-        
-        // Batch process (100 keywords at a time)
-        $batch_size = 100;
+
+        $batch_size = 700;
         $total_updated = 0;
-        $total_keywords = count($keyword_strings);
-        $batches = array_chunk($keyword_strings, $batch_size);
-        
+        $total_keywords = count($all_strings);
+        $batches = array_chunk($all_strings, $batch_size);
+
         global $wpdb;
         $table_name = $wpdb->prefix . 'mindfulseo_keywords';
-        
+
         $keywords_with_data = 0;
-        
+        $all_metrics_lower = array(); // accumulate all results for primary option + Labs fallback
+
         foreach ($batches as $batch_index => $batch) {
-            // Get metrics for this batch
             $metrics = $connector->get_combined_metrics($batch, $location_code, $language_code);
-            
+
             if (is_wp_error($metrics)) {
-                // Log error but continue with next batch
                 error_log('MindfulSEO: DataForSEO API Error for batch ' . ($batch_index + 1) . ': ' . $metrics->get_error_message());
                 continue;
             }
-            
-            // Update database for each keyword in the batch
-            foreach ($batch as $keyword_string) {
-                if (!isset($metrics[$keyword_string]) || !isset($keyword_map[$keyword_string])) {
-                    continue;
-                }
-                
-                $keyword_id = $keyword_map[$keyword_string];
-                $data = $metrics[$keyword_string];
-                
-                // Check if we got actual data (not just NULL values)
-                $dataforseo_status = 'pending';
-                $search_volume = isset($data['search_volume']) && $data['search_volume'] !== null ? $data['search_volume'] : null;
-                $keyword_difficulty = isset($data['keyword_difficulty']) && $data['keyword_difficulty'] !== null ? $data['keyword_difficulty'] : null;
-                $cpc_value = isset($data['cpc']) && $data['cpc'] !== null ? $data['cpc'] : null;
-                
-                if ($search_volume !== null || $keyword_difficulty !== null || $cpc_value !== null) {
-                    $keywords_with_data++;
-                    $dataforseo_status = 'success';
-                } else {
-                    $dataforseo_status = 'no_data';
-                }
-                
-                $update_result = $wpdb->update(
-                    $table_name,
-                    array(
-                        'search_volume' => $search_volume,
-                        'keyword_difficulty' => $keyword_difficulty,
-                        'cpc' => $cpc_value,
-                        'seo_data_updated' => current_time('mysql'),
-                        'dataforseo_status' => $dataforseo_status,
-                    ),
-                    array('id' => $keyword_id),
-                    array('%d', '%d', '%f', '%s', '%s'),
-                    array('%d')
-                );
-                
-                if ($update_result !== false) {
-                    $total_updated++;
+
+            if (is_array($metrics)) {
+                foreach ($metrics as $mk => $mv) {
+                    $all_metrics_lower[strtolower($mk)] = $mv;
                 }
             }
         }
+
+        // --- Labs fallback for keywords with no data ---
+        $no_data_strings = array();
+        foreach ($all_seen as $lk => $orig) {
+            if (!isset($all_metrics_lower[$lk])) {
+                $no_data_strings[] = $orig;
+            } else {
+                $d = $all_metrics_lower[$lk];
+                $has = (isset($d['search_volume']) && $d['search_volume'] !== null)
+                    || (isset($d['keyword_difficulty']) && $d['keyword_difficulty'] !== null)
+                    || (isset($d['cpc']) && $d['cpc'] !== null);
+                if (!$has) {
+                    $no_data_strings[] = $orig;
+                }
+            }
+        }
+
+        if (!empty($no_data_strings)) {
+            error_log('MindfulSEO: ' . count($no_data_strings) . ' keywords with no data — trying Labs fallback');
+            $labs_batches = array_chunk($no_data_strings, 700);
+
+            foreach ($labs_batches as $labs_batch) {
+                $labs_metrics = $connector->get_keyword_overview_labs($labs_batch, $location_code, $language_code);
+                if (is_wp_error($labs_metrics)) {
+                    error_log('MindfulSEO: Labs fallback error: ' . $labs_metrics->get_error_message());
+                    continue;
+                }
+                if (is_array($labs_metrics)) {
+                    foreach ($labs_metrics as $lmk => $lmv) {
+                        $key = strtolower($lmk);
+                        if (!isset($all_metrics_lower[$key]) || (
+                            ($all_metrics_lower[$key]['search_volume'] ?? null) === null &&
+                            ($all_metrics_lower[$key]['keyword_difficulty'] ?? null) === null &&
+                            ($all_metrics_lower[$key]['cpc'] ?? null) === null
+                        )) {
+                            $all_metrics_lower[$key] = $lmv;
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Update each row's DB columns with its LONGTAIL keyword's metrics ---
+        $now = current_time('mysql');
+        foreach ($longtail_to_ids as $lt_key => $row_ids) {
+            $sv = null; $kd = null; $cpc_val = null;
+            $status = 'no_data';
+
+            if (isset($all_metrics_lower[$lt_key])) {
+                $d = $all_metrics_lower[$lt_key];
+                $sv      = isset($d['search_volume']) && $d['search_volume'] !== null ? $d['search_volume'] : null;
+                $kd      = isset($d['keyword_difficulty']) && $d['keyword_difficulty'] !== null ? $d['keyword_difficulty'] : null;
+                $cpc_val = isset($d['cpc']) && $d['cpc'] !== null ? $d['cpc'] : null;
+            }
+
+            if ($sv !== null || $kd !== null || $cpc_val !== null) {
+                $keywords_with_data++;
+                $status = 'success';
+            }
+
+            $sv_sql  = $sv !== null ? $wpdb->prepare('%d', $sv) : 'NULL';
+            $kd_sql  = $kd !== null ? $wpdb->prepare('%d', $kd) : 'NULL';
+            $cpc_sql = $cpc_val !== null ? $wpdb->prepare('%f', $cpc_val) : 'NULL';
+
+            foreach ($row_ids as $kid) {
+                $wpdb->query( $wpdb->prepare(
+                    "UPDATE {$table_name}
+                     SET search_volume = {$sv_sql},
+                         keyword_difficulty = {$kd_sql},
+                         cpc = {$cpc_sql},
+                         seo_data_updated = %s,
+                         dataforseo_status = %s
+                     WHERE id = %d",
+                    $now, $status, $kid
+                ) );
+                $total_updated++;
+            }
+        }
+
+        // --- Save primary keyword metrics in a WP option for the grouped table display ---
+        $primary_metrics_option = array();
+        foreach ($primary_ids as $pk_key => $unused) {
+            if (isset($all_metrics_lower[$pk_key])) {
+                $d = $all_metrics_lower[$pk_key];
+                $primary_metrics_option[$pk_key] = array(
+                    'search_volume'     => isset($d['search_volume']) ? $d['search_volume'] : null,
+                    'keyword_difficulty' => isset($d['keyword_difficulty']) ? $d['keyword_difficulty'] : null,
+                    'cpc'               => isset($d['cpc']) ? $d['cpc'] : null,
+                );
+            }
+        }
+        update_option('mindfulseo_primary_metrics', $primary_metrics_option, false);
         
-        // Build success message with warning if no data returned
+        // Check if DataForSEO is configured
+        $settings = get_option('mindfulseo_settings', array());
+        $dataforseo_configured = !empty($settings['dataforseo_login']) && !empty($settings['dataforseo_password']);
+        
         $message = sprintf(
-            __('Successfully updated SEO data for %d out of %d keywords!', 'mindfulseo'),
-            $total_updated,
-            $total_keywords
+            __('Refreshed metrics for %d keywords — %d have search data.', 'mindfulseo'),
+            $total_keywords,
+            $keywords_with_data
         );
         
-        if ($keywords_with_data === 0) {
-            $message .= "\n\n" . __(
-                '⚠️ Warning: DataForSEO returned empty results for all keywords. ' .
-                'Please verify your account has credits and check your location settings.',
-                'mindfulseo'
-            );
-        } elseif ($keywords_with_data < $total_keywords) {
+        // Calculate data coverage percentage
+        $data_coverage_percent = $total_keywords > 0 ? ($keywords_with_data / $total_keywords) * 100 : 0;
+        
+        // Only show warnings if we have VERY poor coverage
+        if ($keywords_with_data === 0 && $total_keywords > 0) {
+            if (!$dataforseo_configured) {
+                // If DataForSEO not configured, give helpful message instead of alarming warning
+                $message .= "\n\n" . __(
+                    'ℹ️ DataForSEO is not configured yet. Keywords will work without metrics. ' .
+                    'To add search volume and difficulty data, configure DataForSEO in Settings.',
+                    'mindfulseo'
+                );
+            } else {
+                // DataForSEO IS configured but returned NO data at all - real issue
+                $message .= "\n\n" . __(
+                    '⚠️ Warning: DataForSEO returned empty results for all keywords. ' .
+                    'Please verify your account has credits and check your location settings.',
+                    'mindfulseo'
+                );
+            }
+        } elseif ($data_coverage_percent < 20 && $total_keywords > 5) {
+            // Less than 20% coverage AND more than 5 keywords = potential issue
             $message .= "\n\n" . sprintf(
-                __('Note: Only %d keywords have data. Some keywords may not be in DataForSEO database.', 'mindfulseo'),
-                $keywords_with_data
+                __('⚠️ Warning: Only %d out of %d keywords have data. This may indicate low API credits or very niche keywords.', 'mindfulseo'),
+                $keywords_with_data,
+                $total_keywords
             );
+        } elseif ($data_coverage_percent < 100) {
+            // Some missing data, but this is NORMAL - gentle note only if significant
+            $missing = $total_keywords - $keywords_with_data;
+            if ($missing > 2) {
+                $message .= "\n\n" . sprintf(
+                    __('Note: %d keywords have no metrics yet. This is normal for niche or brand-specific terms.', 'mindfulseo'),
+                    $missing
+                );
+            }
         }
         
         wp_send_json_success(array(
@@ -774,51 +1170,62 @@ class MFSEO_AJAX_Handlers {
      */
     public static function batch_optimize_single() {
         check_ajax_referer('mindfulseo_batch_optimize', 'nonce');
-        
+
         if (!current_user_can('edit_posts')) {
             wp_send_json_error(__('Unauthorized', 'mindfulseo'));
         }
-        
+
         $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
-        
+
         if (!$post_id) {
             wp_send_json_error(__('Invalid post ID', 'mindfulseo'));
         }
-        
-        // Get optimizer instance
-        $optimizer = MFSEO_Optimizer::get_instance();
-        
-        // Optimize the post
-        $result = $optimizer->optimize_post($post_id);
-        
-        if (is_wp_error($result)) {
-            wp_send_json_error($result->get_error_message());
-        }
-        
-        // Auto-approve and apply optimization for batch processing
-        if (isset($result['optimization_id'])) {
+
+        @set_time_limit(180);
+
+        try {
+            $optimizer = MFSEO_Optimizer::get_instance();
+
+            $result = $optimizer->optimize_post($post_id);
+
+            if (is_wp_error($result)) {
+                wp_send_json_error($result->get_error_message());
+            }
+
+            if (!is_array($result) || !isset($result['optimization_id'])) {
+                wp_send_json_error(__('Optimization returned no data. The AI may not have responded correctly.', 'mindfulseo'));
+            }
+
             $apply_result = $optimizer->apply_optimization($result['optimization_id']);
-            
+
             if (is_wp_error($apply_result)) {
                 wp_send_json_error($apply_result->get_error_message());
             }
+
+            require_once MINDFULSEO_PLUGIN_DIR . 'includes/class-seo-plugin-adapter.php';
+            $adapter = MFSEO_SEO_Plugin_Adapter::get_instance();
+            $post = get_post($post_id);
+
+            $post_title = $post && isset($post->post_title) ? (string) $post->post_title : '';
+            if (empty($post_title)) {
+                $post_title = 'Post #' . $post_id;
+            }
+
+            wp_send_json_success(array(
+                'message' => __('Post optimized successfully', 'mindfulseo'),
+                'post_id' => $post_id,
+                'post_title' => $post_title,
+                'seo_data' => array(
+                    'keyword' => $adapter->get_focus_keyword($post_id) ?: '—',
+                    'title' => $adapter->get_seo_title($post_id) ?: '—',
+                    'description' => $adapter->get_meta_description($post_id) ?: '—',
+                    'slug' => $post ? $post->post_name : '—',
+                ),
+            ));
+        } catch (\Throwable $e) {
+            error_log('MindfulSEO batch_optimize_single fatal: ' . $e->getMessage());
+            wp_send_json_error(__('Server error: ', 'mindfulseo') . $e->getMessage());
         }
-        
-        // Get the updated SEO data to return
-        require_once MINDFULSEO_PLUGIN_DIR . 'includes/class-seo-plugin-adapter.php';
-        $adapter = MFSEO_SEO_Plugin_Adapter::get_instance();
-        $post = get_post($post_id);
-        
-        wp_send_json_success(array(
-            'message' => __('Post optimized successfully', 'mindfulseo'),
-            'post_id' => $post_id,
-            'seo_data' => array(
-                'keyword' => $adapter->get_focus_keyword($post_id) ?: '—',
-                'title' => $adapter->get_seo_title($post_id) ?: '—',
-                'description' => $adapter->get_meta_description($post_id) ?: '—',
-                'slug' => $post ? $post->post_name : '—',
-            ),
-        ));
     }
     
     /**
@@ -1060,8 +1467,9 @@ class MFSEO_AJAX_Handlers {
                 }
             }
             
-            // Extract common terms from titles
-            $title = strtolower($post->post_title);
+            // Extract common terms from titles (PHP 8.x: ensure string is not null)
+            $post_title = isset($post->post_title) && is_string($post->post_title) ? $post->post_title : '';
+            $title = strtolower($post_title);
             $words = preg_split('/\s+/', $title);
             foreach ($words as $word) {
                 $word = trim($word, '.,;:!?"\'()[]{}');
@@ -1090,7 +1498,7 @@ class MFSEO_AJAX_Handlers {
         global $wpdb;
         $table_name = $wpdb->prefix . 'mindfulseo_language_rules';
         
-        $rules = $wpdb->get_results("SELECT * FROM {$table_name} WHERE status = 'active' ORDER BY priority DESC LIMIT 10");
+        $rules = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table_name} WHERE status = %s ORDER BY priority DESC LIMIT %d", 'active', 10 ) );
         
         if (empty($rules)) {
             return '';
@@ -1182,7 +1590,12 @@ class MFSEO_AJAX_Handlers {
         $connector = MFSEO_DataForSEO_Connector::get_instance();
         
         if (!$connector->is_configured()) {
-            wp_send_json_error(array('message' => __('DataForSEO API not configured. Please add your credentials in Settings.', 'mindfulseo')));
+            // Return info_only flag - not an error, just informational
+            wp_send_json_success(array(
+                'message' => __('ℹ️ DataForSEO is not configured yet. Search volume and difficulty data will be available once you configure DataForSEO in Settings.', 'mindfulseo'),
+                'info_only' => true
+            ));
+            return;
         }
         
         global $wpdb;
@@ -1201,66 +1614,30 @@ class MFSEO_AJAX_Handlers {
             wp_send_json_error(array('message' => __('No valid keywords provided', 'mindfulseo')));
         }
         
-        // Check which keywords need refreshing (missing data OR older than 30 days)
-        $thirty_days_ago = date('Y-m-d H:i:s', strtotime('-30 days'));
+        // Always re-fetch all keywords when the user clicks Refresh
         $placeholders = implode(', ', array_fill(0, count($keywords_to_check), '%s'));
-        
+        $all_params = array_merge($keywords_to_check, $keywords_to_check);
         $existing_keywords = $wpdb->get_results(
             $wpdb->prepare(
-                "SELECT id, primary_keyword, search_volume, keyword_difficulty, cpc, seo_data_updated
+                "SELECT id, primary_keyword, longtail_keyword
                  FROM {$table_name}
-                 WHERE primary_keyword IN ($placeholders)",
-                $keywords_to_check
-            ),
-            OBJECT_K
+                 WHERE primary_keyword IN ($placeholders)
+                    OR longtail_keyword IN ($placeholders)",
+                $all_params
+            )
         );
-        
-        // Separate keywords into: need_fetch, already_fresh
-        $keywords_to_fetch = array();
-        $keyword_map = array(); // Map keyword => existing ID
+        $existing_keywords = is_array($existing_keywords) ? $existing_keywords : array();
+
+        $keywords_to_fetch = $keywords_to_check;
+        $keyword_map = array();
         $fresh_count = 0;
-        
-        foreach ($keywords_to_check as $keyword) {
-            $existing = null;
-            
-            // Find existing keyword (case-insensitive)
-            foreach ($existing_keywords as $row) {
-                if (strcasecmp($row->primary_keyword, $keyword) === 0) {
-                    $existing = $row;
-                    break;
+
+        foreach ($existing_keywords as $row) {
+            foreach ($keywords_to_check as $kw) {
+                if (strcasecmp($row->primary_keyword, $kw) === 0 || strcasecmp($row->longtail_keyword, $kw) === 0) {
+                    $keyword_map[$kw] = $row->id;
                 }
             }
-            
-            if (!$existing) {
-                // Keyword doesn't exist - need to fetch
-                $keywords_to_fetch[] = $keyword;
-            } elseif (empty($existing->seo_data_updated) || $existing->seo_data_updated < $thirty_days_ago) {
-                // Data is missing or old - need to fetch
-                $keywords_to_fetch[] = $keyword;
-                $keyword_map[$keyword] = $existing->id;
-            } elseif ($existing->search_volume === null && $existing->keyword_difficulty === null) {
-                // Has timestamp but no actual data - need to fetch
-                $keywords_to_fetch[] = $keyword;
-                $keyword_map[$keyword] = $existing->id;
-            } else {
-                // Data is fresh - don't fetch
-                $keyword_map[$keyword] = $existing->id;
-                $fresh_count++;
-            }
-        }
-        
-        // If no keywords need fetching, we're done
-        if (empty($keywords_to_fetch)) {
-            wp_send_json_success(array(
-                'message' => sprintf(
-                    __('All %d keywords are up to date (refreshed within 30 days). Page will reload to show current data.', 'mindfulseo'),
-                    $fresh_count
-                ),
-                'keywords_refreshed' => 0,
-                'keywords_fresh' => $fresh_count,
-                'reload' => true
-            ));
-            return;
         }
         
         // Get settings for location and language
@@ -1274,16 +1651,20 @@ class MFSEO_AJAX_Handlers {
         
         $metrics = $connector->get_combined_metrics($keywords_to_fetch, $location_code, $language_code);
         
-        error_log('MindfulSEO: DataForSEO returned metrics for ' . count($metrics) . ' keywords');
-        error_log('MindfulSEO: First 3 metrics: ' . print_r(array_slice($metrics, 0, 3, true), true));
-        
-        if (is_wp_error($metrics)) {
-            error_log('MindfulSEO: DataForSEO API Error: ' . $metrics->get_error_message());
-            wp_send_json_error(array(
-                'message' => __('DataForSEO API Error: ', 'mindfulseo') . $metrics->get_error_message()
-            ));
+        if ( is_wp_error( $metrics ) ) {
+            error_log( 'MindfulSEO: DataForSEO API Error: ' . $metrics->get_error_message() );
+            wp_send_json_error( array(
+                'message' => __( 'DataForSEO API Error: ', 'mindfulseo' ) . $metrics->get_error_message()
+            ) );
             return;
         }
+        
+        if ( ! is_array( $metrics ) ) {
+            error_log( 'MindfulSEO: DataForSEO returned unexpected type: ' . gettype( $metrics ) );
+            $metrics = array();
+        }
+        
+        error_log( 'MindfulSEO: DataForSEO returned metrics for ' . count( $metrics ) . ' keywords' );
         
         // Update or insert keywords in database
         $total_updated = 0;
@@ -1315,75 +1696,168 @@ class MFSEO_AJAX_Handlers {
                 $dataforseo_status = 'error';
             }
             
+            $sv_sql  = $search_volume !== null ? $wpdb->prepare('%d', $search_volume) : 'NULL';
+            $kd_sql  = $difficulty !== null ? $wpdb->prepare('%d', $difficulty) : 'NULL';
+            $cpc_sql = $cpc !== null ? $wpdb->prepare('%f', $cpc) : 'NULL';
+            $now     = current_time('mysql');
+
             if (isset($keyword_map[$keyword_string])) {
-                // Update existing keyword
-                $update_result = $wpdb->update(
-                    $table_name,
-                    array(
-                        'search_volume' => $search_volume,
-                        'keyword_difficulty' => $difficulty,
-                        'cpc' => $cpc,
-                        'seo_data_updated' => current_time('mysql'),
-                        'dataforseo_status' => $dataforseo_status,
-                    ),
-                    array('id' => $keyword_map[$keyword_string]),
-                    array('%d', '%d', '%f', '%s', '%s'),
-                    array('%d')
-                );
-                
-                if ($update_result !== false) {
-                    $total_updated++;
-                }
+                // Update rows matching by primary_keyword OR longtail_keyword
+                $rows_affected = $wpdb->query( $wpdb->prepare(
+                    "UPDATE {$table_name}
+                     SET search_volume = {$sv_sql},
+                         keyword_difficulty = {$kd_sql},
+                         cpc = {$cpc_sql},
+                         seo_data_updated = %s,
+                         dataforseo_status = %s
+                     WHERE LOWER(primary_keyword) = LOWER(%s) OR LOWER(longtail_keyword) = LOWER(%s)",
+                    $now, $dataforseo_status, $keyword_string, $keyword_string
+                ) );
+                $total_updated += max(1, (int) $rows_affected);
             } else {
-                // Insert new keyword - ALWAYS insert even with NULL values
-                $insert_result = $wpdb->insert(
-                    $table_name,
-                    array(
-                        'primary_keyword' => $keyword_string,
-                        'longtail_keyword' => $keyword_string,
-                        'search_volume' => $search_volume,
-                        'keyword_difficulty' => $difficulty,
-                        'cpc' => $cpc,
-                        'priority' => 'MEDIUM',
-                        'search_intent' => 'Informational',
-                        'seo_data_updated' => current_time('mysql'),
-                        'dataforseo_status' => $dataforseo_status,
-                        'created_date' => current_time('mysql'),
-                    ),
-                    array('%s', '%s', '%d', '%d', '%f', '%s', '%s', '%s', '%s', '%s')
-                );
-                
-                if ($insert_result) {
+                $existing_count = (int) $wpdb->get_var( $wpdb->prepare(
+                    "SELECT COUNT(*) FROM {$table_name} WHERE LOWER(primary_keyword) = LOWER(%s) OR LOWER(longtail_keyword) = LOWER(%s)",
+                    $keyword_string, $keyword_string
+                ) );
+                if ( $existing_count > 0 ) {
+                    $rows_affected = $wpdb->query( $wpdb->prepare(
+                        "UPDATE {$table_name}
+                         SET search_volume = {$sv_sql},
+                             keyword_difficulty = {$kd_sql},
+                             cpc = {$cpc_sql},
+                             seo_data_updated = %s,
+                             dataforseo_status = %s
+                         WHERE LOWER(primary_keyword) = LOWER(%s) OR LOWER(longtail_keyword) = LOWER(%s)",
+                        $now, $dataforseo_status, $keyword_string, $keyword_string
+                    ) );
+                    $total_updated += max(1, (int) $rows_affected);
+                } else {
+                    $wpdb->query( $wpdb->prepare(
+                        "INSERT INTO {$table_name}
+                         (primary_keyword, longtail_keyword, search_volume, keyword_difficulty, cpc, priority, search_intent, seo_data_updated, dataforseo_status, created_date)
+                         VALUES (%s, %s, {$sv_sql}, {$kd_sql}, {$cpc_sql}, %s, %s, %s, %s, %s)",
+                        $keyword_string, $keyword_string, 'MEDIUM', 'Informational', $now, $dataforseo_status, $now
+                    ) );
                     $total_inserted++;
                 }
             }
         }
+
+        // --- Labs fallback for this handler too ---
+        $no_data_kw = array();
+        foreach ($keywords_to_fetch as $kw_str) {
+            $check = $wpdb->get_row( $wpdb->prepare(
+                "SELECT search_volume, keyword_difficulty, cpc FROM {$table_name}
+                 WHERE LOWER(primary_keyword) = LOWER(%s) OR LOWER(longtail_keyword) = LOWER(%s)
+                 LIMIT 1",
+                $kw_str, $kw_str
+            ) );
+            if ($check && $check->search_volume === null && $check->keyword_difficulty === null && $check->cpc === null) {
+                $no_data_kw[] = $kw_str;
+            }
+        }
+
+        if (!empty($no_data_kw)) {
+            error_log('MindfulSEO Batch: ' . count($no_data_kw) . ' keywords with no data — trying Labs fallback');
+            $labs_batches2 = array_chunk($no_data_kw, 700);
+
+            foreach ($labs_batches2 as $lb) {
+                $labs_m = $connector->get_keyword_overview_labs($lb, $location_code, $language_code);
+                if (is_wp_error($labs_m)) {
+                    error_log('MindfulSEO Batch: Labs fallback error: ' . $labs_m->get_error_message());
+                    continue;
+                }
+
+                $labs_low = array();
+                if (is_array($labs_m)) {
+                    foreach ($labs_m as $mk2 => $mv2) {
+                        $labs_low[strtolower($mk2)] = $mv2;
+                    }
+                }
+
+                foreach ($lb as $kw2) {
+                    $kl2 = strtolower(trim($kw2));
+                    $sv2 = null; $kd2 = null; $cpc2 = null; $st2 = 'no_data';
+
+                    if (isset($labs_low[$kl2])) {
+                        $d2 = $labs_low[$kl2];
+                        $sv2  = isset($d2['search_volume']) && $d2['search_volume'] !== null ? $d2['search_volume'] : null;
+                        $kd2  = isset($d2['keyword_difficulty']) && $d2['keyword_difficulty'] !== null ? $d2['keyword_difficulty'] : null;
+                        $cpc2 = isset($d2['cpc']) && $d2['cpc'] !== null ? $d2['cpc'] : null;
+                    }
+
+                    if ($sv2 !== null || $kd2 !== null || $cpc2 !== null) {
+                        $keywords_with_data++;
+                        $st2 = 'success';
+                    }
+
+                    $sv_s2  = $sv2 !== null ? $wpdb->prepare('%d', $sv2) : 'NULL';
+                    $kd_s2  = $kd2 !== null ? $wpdb->prepare('%d', $kd2) : 'NULL';
+                    $cpc_s2 = $cpc2 !== null ? $wpdb->prepare('%f', $cpc2) : 'NULL';
+                    $now2   = current_time('mysql');
+
+                    $wpdb->query( $wpdb->prepare(
+                        "UPDATE {$table_name}
+                         SET search_volume = {$sv_s2},
+                             keyword_difficulty = {$kd_s2},
+                             cpc = {$cpc_s2},
+                             seo_data_updated = %s,
+                             dataforseo_status = %s
+                         WHERE LOWER(primary_keyword) = LOWER(%s) OR LOWER(longtail_keyword) = LOWER(%s)",
+                        $now2, $st2, $kw2, $kw2
+                    ) );
+                }
+            }
+        }
+        
+        // Check if DataForSEO is configured
+        $settings = get_option('mindfulseo_settings', array());
+        $dataforseo_configured = !empty($settings['dataforseo_login']) && !empty($settings['dataforseo_password']);
         
         $message = sprintf(
-            __('%d keywords refreshed from DataForSEO, %d already up to date. Page will reload.', 'mindfulseo'),
-            $total_updated + $total_inserted,
-            $fresh_count
+            __('%d keywords refreshed from DataForSEO. Page will reload.', 'mindfulseo'),
+            $total_updated + $total_inserted
         );
         
-        // Add warning if no data was returned
-        if ($keywords_with_data === 0 && ($total_updated > 0 || $total_inserted > 0)) {
-            $message .= "\n\n" . __(
-                '⚠️ Warning: DataForSEO returned empty results for all keywords. ' .
-                'Please verify your account has credits and check your location settings.',
-                'mindfulseo'
-            );
-        } elseif ($keywords_with_data < ($total_updated + $total_inserted)) {
-            $message .= "\n\n" . sprintf(
-                __('Note: Only %d out of %d keywords have data. Some keywords may not be in DataForSEO database.', 'mindfulseo'),
-                $keywords_with_data,
-                ($total_updated + $total_inserted)
-            );
+        $total_keywords_on_page = $total_updated + $total_inserted;
+        $total_with_data = $keywords_with_data;
+        
+        // Only show warnings if we actually fetched keywords and got VERY poor results
+        if ($total_updated + $total_inserted > 0) {
+            // Calculate what percentage of NEWLY FETCHED keywords got data
+            $new_fetch_coverage = ($keywords_with_data / ($total_updated + $total_inserted)) * 100;
+            
+            // Only show warning if less than 20% of NEWLY fetched keywords got data
+            // AND we're not just checking a few niche keywords
+            if ($new_fetch_coverage < 20 && ($total_updated + $total_inserted) > 5) {
+                if (!$dataforseo_configured) {
+                    $message .= "\n\n" . __(
+                        'ℹ️ DataForSEO is not configured yet. To add search volume and difficulty data, configure DataForSEO in Settings.',
+                        'mindfulseo'
+                    );
+                } else {
+                    // DataForSEO IS configured but returned almost no data for many keywords
+                    $message .= "\n\n" . __(
+                        '⚠️ Warning: DataForSEO returned very limited data for these keywords. ' .
+                        'This may indicate: 1) Keywords are very niche, 2) Low API credits, or 3) Location settings need adjustment.',
+                        'mindfulseo'
+                    );
+                }
+            } elseif ($new_fetch_coverage < 100 && $keywords_with_data < ($total_updated + $total_inserted)) {
+                // Some new keywords have no data - this is NORMAL, just a gentle note
+                $missing = ($total_updated + $total_inserted) - $keywords_with_data;
+                if ($missing > 2) { // Only show if more than 2 keywords are missing data
+                    $message .= "\n\n" . sprintf(
+                        __('Note: %d keywords have no metrics yet. This is normal for very niche or brand-specific terms.', 'mindfulseo'),
+                        $missing
+                    );
+                }
+            }
         }
         
         wp_send_json_success(array(
             'message' => $message,
             'keywords_refreshed' => $total_updated + $total_inserted,
-            'keywords_fresh' => $fresh_count,
             'with_data' => $keywords_with_data,
             'reload' => true
         ));
@@ -1400,18 +1874,30 @@ class MFSEO_AJAX_Handlers {
             wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
         }
         
-        // Get domain from site URL
-        $site_url = get_site_url();
-        $parsed_url = parse_url($site_url);
-        $domain = isset($parsed_url['host']) ? $parsed_url['host'] : '';
-        
-        // Remove www. prefix if present
-        $domain = preg_replace('/^www\./', '', $domain);
-        
-        if (empty($domain)) {
-            wp_send_json_error(array(
-                'message' => __('Unable to determine site domain.', 'mindfulseo')
-            ));
+        // Use the configured live domain first; fall back to the WordPress site URL
+        $settings = get_option( 'mindfulseo_settings', array() );
+        $domain   = isset( $settings['live_domain'] ) ? trim( $settings['live_domain'] ) : '';
+
+        if ( empty( $domain ) ) {
+            $parsed_url = parse_url( get_site_url() );
+            $domain     = isset( $parsed_url['host'] ) ? $parsed_url['host'] : '';
+            $domain     = preg_replace( '/^www\./', '', $domain );
+        }
+
+        if ( empty( $domain ) ) {
+            wp_send_json_error( array(
+                'message' => __( 'Unable to determine site domain. Please set your Live Domain in MindfulSEO Settings → DataForSEO section.', 'mindfulseo' ),
+            ) );
+        }
+
+        // If the domain still looks like a local/staging URL, warn the user
+        if ( preg_match( '/\.(local|test|localhost|dev|staging)$/i', $domain ) || strpos( $domain, 'localhost' ) !== false ) {
+            wp_send_json_error( array(
+                'message' => sprintf(
+                    __( 'The domain "%s" is a local/staging URL that DataForSEO cannot look up. Please set your live production domain in MindfulSEO → Settings → DataForSEO.', 'mindfulseo' ),
+                    $domain
+                ),
+            ) );
         }
         
         // Get DataForSEO connector
@@ -1548,7 +2034,7 @@ class MFSEO_AJAX_Handlers {
      * @since 1.3.0
      */
     public static function save_custom_prompt() {
-        check_ajax_referer('mindfulseo_ajax', 'nonce');
+        check_ajax_referer('mindfulseo_ajax_nonce', 'nonce');
         
         if (!current_user_can('manage_options')) {
             wp_send_json_error(array('message' => __('Insufficient permissions', 'mindfulseo')));
@@ -1580,6 +2066,303 @@ class MFSEO_AJAX_Handlers {
             'message' => __('Custom prompt saved successfully', 'mindfulseo'),
             'prompt_type' => $prompt_type
         ));
+    }
+    
+    /**
+     * Refresh dashboard data
+     * 
+     * @since 2.0.0
+     */
+    public static function refresh_dashboard() {
+        check_ajax_referer('mindfulseo_dashboard', 'nonce');
+        
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
+        }
+        
+        global $wpdb;
+        
+        // Gather dashboard statistics
+        $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
+        
+        // Optimized posts
+        $optimized_posts = $wpdb->get_var(
+            "SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} 
+            WHERE meta_key IN ('rank_math_focus_keyword', '_yoast_wpseo_focuskw')
+            AND meta_value != ''"
+        );
+        
+        // Keywords tracked
+        $keywords_table = $wpdb->prefix . 'mindfulseo_keywords';
+        $keywords_tracked = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$keywords_table}" );
+
+        // Content clusters
+        $content_clusters = (int) $wpdb->get_var( "SELECT COUNT(DISTINCT primary_keyword) FROM {$keywords_table}" );
+        
+        // Needs attention
+        $needs_attention = $wpdb->get_var(
+            "SELECT COUNT(*) FROM {$wpdb->posts} p
+            LEFT JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id 
+                AND pm.meta_key IN ('rank_math_description', '_yoast_wpseo_metadesc')
+            WHERE p.post_status = 'publish' 
+            AND p.post_type IN ('post', 'page')
+            AND (pm.meta_value IS NULL OR pm.meta_value = '')"
+        );
+        
+        // Calculate SEO score
+        $optimization_rate = $total_posts > 0 ? ($optimized_posts / $total_posts) * 100 : 0;
+        $seo_score = min(100, round($optimization_rate * 0.6 + ($keywords_tracked > 0 ? 20 : 0) + ($content_clusters > 0 ? 20 : 0)));
+        
+        wp_send_json_success(array(
+            'stats' => array(
+                'total_posts' => $total_posts,
+                'optimized_posts' => $optimized_posts,
+                'keywords_tracked' => $keywords_tracked,
+                'content_clusters' => $content_clusters,
+                'needs_attention' => $needs_attention,
+                'seo_score' => $seo_score,
+            ),
+        ));
+    }
+    
+    /**
+     * Refresh content clusters
+     * 
+     * @since 2.0.0
+     */
+    public static function refresh_clusters() {
+        check_ajax_referer( 'mindfulseo_admin', 'nonce' );
+
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Unauthorized', 'mindfulseo' ) ) );
+        }
+
+        // Clear cluster cache and Content Hub quick counts
+        delete_transient( 'mfseo_cluster_all_clusters' );
+        delete_transient( 'mfseo_hub_quick_counts' );
+
+        // Force recalculation
+        if ( class_exists( 'MFSEO_Content_Cluster_Engine' ) ) {
+            $engine   = MFSEO_Content_Cluster_Engine::get_instance();
+            $clusters = $engine->identify_clusters();
+
+            wp_send_json_success( array(
+                'message'       => __( 'Clusters refreshed', 'mindfulseo' ),
+                'cluster_count' => count( $clusters ),
+            ) );
+        } else {
+            wp_send_json_error( array( 'message' => __( 'Cluster engine not available', 'mindfulseo' ) ) );
+        }
+    }
+    
+    /**
+     * Suggest pillar content for a cluster
+     * 
+     * @since 2.0.0
+     */
+    public static function suggest_pillar() {
+        check_ajax_referer('mindfulseo_admin', 'nonce');
+        
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
+        }
+        
+        $cluster = isset($_POST['cluster']) ? sanitize_text_field($_POST['cluster']) : '';
+        
+        if (empty($cluster)) {
+            wp_send_json_error(array('message' => __('Cluster name required', 'mindfulseo')));
+        }
+        
+        // Use AI to suggest pillar content
+        if (class_exists('MFSEO_AI_Connector')) {
+            $ai = MFSEO_AI_Connector::get_instance();
+            
+            $prompt = sprintf(
+                'You are an SEO expert. Suggest a comprehensive pillar content piece for the topic cluster "%s". ' .
+                'Provide: 1) A compelling title, 2) A brief outline (5-7 main sections), 3) Target word count, ' .
+                '4) Key subtopics to cover. Format as a structured recommendation.',
+                $cluster
+            );
+            
+            $response = $ai->generate_completion($prompt, array(
+                'max_tokens' => 500,
+                'temperature' => 0.7,
+            ));
+            
+            if ($response && !is_wp_error($response)) {
+                wp_send_json_success(array(
+                    'suggestion' => $response,
+                    'cluster' => $cluster,
+                ));
+            }
+        }
+        
+        // Fallback suggestion
+        wp_send_json_success(array(
+            'suggestion' => sprintf(
+                'For the "%s" cluster, consider creating a comprehensive guide that covers all aspects of this topic. ' .
+                'Aim for 2,000+ words with clear sections, actionable advice, and internal links to supporting content.',
+                $cluster
+            ),
+        ));
+    }
+    
+    /**
+     * Generate content gap suggestions
+     * 
+     * @since 2.0.0
+     */
+    public static function generate_gap_suggestions() {
+        check_ajax_referer('mindfulseo_admin', 'nonce');
+        
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
+        }
+        
+        // Get content gaps
+        if (class_exists('MFSEO_Content_Cluster_Engine')) {
+            $engine = MFSEO_Content_Cluster_Engine::get_instance();
+            $gaps = $engine->find_content_gaps();
+            
+            // Generate AI suggestions for top gaps
+            $suggestions = array();
+            $top_gaps = array_slice($gaps, 0, 3);
+            
+            foreach ($top_gaps as $gap) {
+                $suggestions[] = array(
+                    'title' => 'Create content for: ' . $gap['keyword'],
+                    'description' => sprintf(
+                        'This keyword has %s monthly searches and %s difficulty. ' .
+                        'Create a targeted piece in the "%s" cluster to capture this opportunity.',
+                        number_format($gap['search_volume']),
+                        $gap['difficulty'] ?: 'unknown',
+                        $gap['cluster']
+                    ),
+                );
+            }
+            
+            wp_send_json_success(array('suggestions' => $suggestions));
+        }
+        
+        wp_send_json_error(array('message' => __('Unable to generate suggestions', 'mindfulseo')));
+    }
+    
+    /**
+     * Analyze internal links
+     * 
+     * @since 2.0.0
+     */
+    public static function analyze_internal_links() {
+        check_ajax_referer( 'mindfulseo_admin', 'nonce' );
+
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Unauthorized', 'mindfulseo' ) ) );
+            return;
+        }
+
+        if ( ! class_exists( 'MFSEO_Internal_Linker' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Internal Linker not available', 'mindfulseo' ) ) );
+            return;
+        }
+
+        // Extend PHP time limit for this AJAX operation (orphan scan can take a while)
+        if ( function_exists( 'set_time_limit' ) ) {
+            @set_time_limit( 60 );
+        }
+
+        $start_time = microtime( true );
+
+        try {
+            $linker = MFSEO_Internal_Linker::get_instance();
+            $linker->clear_cache();
+            $data = $linker->find_opportunities( true );
+        } catch ( \Throwable $e ) {
+            error_log( 'MindfulSEO: Internal links analysis error: ' . $e->getMessage() );
+            wp_send_json_error( array( 'message' => __( 'Analysis failed: ', 'mindfulseo' ) . $e->getMessage() ) );
+            return;
+        }
+
+        $total_time = microtime( true ) - $start_time;
+        error_log( sprintf( 'MindfulSEO: Internal links analysis completed in %.2f seconds', $total_time ) );
+
+        if ( ! is_array( $data ) ) {
+            wp_send_json_error( array( 'message' => __( 'Analysis returned unexpected data.', 'mindfulseo' ) ) );
+            return;
+        }
+
+        $orphan_count = isset( $data['orphan_count'] ) ? (int) $data['orphan_count'] : 0;
+        $suggestions  = isset( $data['suggestions'] ) ? $data['suggestions'] : array();
+
+        delete_transient( 'mfseo_hub_quick_counts' );
+
+        wp_send_json_success( array(
+            'missing_links' => $orphan_count,
+            'orphan_pages'  => $orphan_count,
+            'suggestions'   => $suggestions,
+            'message'       => sprintf(
+                __( 'Found %d orphan pages (showing top %d suggestions). Completed in %.1f seconds.', 'mindfulseo' ),
+                $orphan_count,
+                count( $suggestions ),
+                $total_time
+            ),
+        ) );
+    }
+
+    /**
+     * Scan all post content for broken internal and external links.
+     */
+    public static function scan_broken_links() {
+        check_ajax_referer( 'mindfulseo_admin', 'nonce' );
+
+        if ( ! current_user_can( 'edit_posts' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Unauthorized', 'mindfulseo' ) ) );
+            return;
+        }
+
+        if ( ! class_exists( 'MFSEO_Internal_Linker' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Internal Linker not available', 'mindfulseo' ) ) );
+            return;
+        }
+
+        if ( function_exists( 'set_time_limit' ) ) {
+            @set_time_limit( 0 );
+        }
+        if ( function_exists( 'ignore_user_abort' ) ) {
+            @ignore_user_abort( true );
+        }
+
+        try {
+            $linker = MFSEO_Internal_Linker::get_instance();
+            $phase = isset( $_POST['phase'] ) ? sanitize_key( wp_unslash( $_POST['phase'] ) ) : '';
+            $quick = isset( $_POST['quick'] ) && (string) $_POST['quick'] === '1';
+            $post_limit = 20;
+            if ( isset( $_POST['post_limit'] ) ) {
+                $post_limit = absint( wp_unslash( $_POST['post_limit'] ) );
+            }
+
+            if ( $phase === 'start' || $phase === 'step' ) {
+                if ( $phase === 'start' ) {
+                    $linker->clear_broken_links_cache();
+                }
+                $out = $linker->scan_broken_links_chunked( $quick, $phase, $post_limit );
+                if ( ! empty( $out['error'] ) ) {
+                    wp_send_json_error( array( 'message' => $out['error'] ) );
+                    return;
+                }
+                wp_send_json_success( $out );
+                return;
+            }
+
+            /* Legacy single-shot scan (large sites may hit timeouts). */
+            $linker->clear_broken_links_cache();
+            $data = $linker->scan_broken_links( true );
+        } catch ( \Throwable $e ) {
+            error_log( 'MindfulSEO: Broken link scan error: ' . $e->getMessage() );
+            wp_send_json_error( array( 'message' => __( 'Scan failed: ', 'mindfulseo' ) . $e->getMessage() ) );
+            return;
+        }
+
+        wp_send_json_success( $data );
     }
 }
 

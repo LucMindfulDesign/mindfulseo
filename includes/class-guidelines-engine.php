@@ -50,6 +50,16 @@ class MFSEO_Guidelines_Engine {
         $this->upload_dir = MINDFULSEO_GUIDELINES_DIR;
         $this->ensure_upload_directory();
     }
+
+    /**
+     * Check if the guidelines table exists
+     *
+     * @return bool
+     */
+    private function table_exists() {
+        global $wpdb;
+        return $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $this->table_name)) === $this->table_name;
+    }
     
     /**
      * Ensure upload directory exists
@@ -191,68 +201,145 @@ class MFSEO_Guidelines_Engine {
     public function parse_markdown_guidelines($markdown_content) {
         $rules = array();
         
-        // Split by lines
         $lines = explode("\n", $markdown_content);
-        
         $current_section = '';
         
         foreach ($lines as $line) {
             $line = trim($line);
             
-            // Skip empty lines
             if (empty($line)) {
                 continue;
             }
             
-            // Detect sections
-            if (preg_match('/^##\s+(.+)/', $line, $matches)) {
+            // Detect section headings (## or ###)
+            if (preg_match('/^#{2,3}\s+(.+)/', $line, $matches)) {
                 $current_section = trim($matches[1]);
                 continue;
             }
             
-            // Parse "avoid term" rules (e.g., - **Avoid:** "ritual" → Use "practice")
-            if (preg_match('/[•\-\*]\s*\*\*Avoid:\*\*\s*"([^"]+)"\s*→\s*Use\s*"([^"]+)"/i', $line, $matches)) {
+            // Must be a list item
+            if (!preg_match('/^[•\-\*]\s+/', $line)) {
+                continue;
+            }
+            
+            // --- Avoid term: "X" → Use "Y" (may have multiple alternatives) ---
+            if (preg_match('/\*\*Avoid:\*\*\s*"([^"]+)"\s*→\s*Use\s+"([^"]+)"/i', $line, $matches)) {
+                $avoid = trim($matches[1]);
+                $preferred = rtrim(trim($matches[2]), ',');
+                
+                $context = $current_section;
+                // Grab parenthetical note at end of line if present
+                if (preg_match('/\(([^)]+)\)\s*$/', $line, $note)) {
+                    $context .= ' — ' . trim($note[1]);
+                }
+                
                 $rules[] = array(
                     'rule_type' => 'avoid_term',
-                    'avoid_term' => $matches[1],
-                    'preferred_term' => $matches[2],
-                    'context' => $current_section
+                    'avoid_term' => $avoid,
+                    'preferred_term' => $preferred,
+                    'context' => $context
                 );
                 continue;
             }
             
-            // Parse "capitalize" rules (e.g., - Capitalize: Dharma, Sangha, Lamrim)
-            if (preg_match('/[•\-\*]\s*\*\*Capitalize:\*\*\s*(.+)/i', $line, $matches)) {
-                $terms = array_map('trim', explode(',', $matches[1]));
-                foreach ($terms as $term) {
+            // --- Capitalize: Term1, Term2 OR Capitalize: Term (parenthetical) ---
+            if (preg_match('/\*\*Capitalize:\*\*\s*(.+)/i', $line, $matches)) {
+                $raw = trim($matches[1]);
+                
+                // Check if this is a single term with parenthetical context
+                if (preg_match('/^([^,(]+)\s+\((.+)\)\s*$/', $raw, $single)) {
+                    $term = trim($single[1]);
+                    $ctx = trim($single[2]);
                     $rules[] = array(
                         'rule_type' => 'capitalize',
                         'avoid_term' => strtolower($term),
                         'preferred_term' => $term,
-                        'context' => $current_section
+                        'context' => $current_section . ' — ' . $ctx
+                    );
+                } else {
+                    $terms = array_map('trim', explode(',', $raw));
+                    foreach ($terms as $term) {
+                        if (empty($term)) continue;
+                        $rules[] = array(
+                            'rule_type' => 'capitalize',
+                            'avoid_term' => strtolower($term),
+                            'preferred_term' => $term,
+                            'context' => $current_section
+                        );
+                    }
+                }
+                continue;
+            }
+            
+            // --- Required: Always use "X" for Y → capitalize rule ---
+            if (preg_match('/\*\*Required:\*\*\s*(.+)/i', $line, $matches)) {
+                $text = trim($matches[1]);
+                if (preg_match('/(?:Always\s+use\s+)?"([^"]+)"\s+(?:for|before|when)\s+(.+)/i', $text, $req)) {
+                    $preferred = rtrim(trim($req[1]), ',');
+                    $for_what = rtrim(trim($req[2]), '.');
+                    $rules[] = array(
+                        'rule_type' => 'capitalize',
+                        'avoid_term' => strtolower($preferred),
+                        'preferred_term' => $preferred,
+                        'context' => $current_section . ' — ' . $for_what
                     );
                 }
                 continue;
             }
             
-            // Parse "preferred term" rules (e.g., - **Preferred:** "His Holiness the Dalai Lama")
-            if (preg_match('/[•\-\*]\s*\*\*Preferred:\*\*\s*"([^"]+)"/i', $line, $matches)) {
+            // --- Preferred: Use "X" for/when Y → preferred_term rule ---
+            if (preg_match('/\*\*Preferred:\*\*\s*(.+)/i', $line, $matches)) {
+                $text = trim($matches[1]);
+                if (preg_match('/(?:Use\s+)?"([^"]+)"/i', $text, $pref)) {
+                    $preferred = rtrim(trim($pref[1]), ',');
+                    // Extract parenthetical or "for ..." context
+                    $ctx = $current_section;
+                    if (preg_match('/\(([^)]+)\)/', $text, $note)) {
+                        $ctx .= ' — ' . trim($note[1]);
+                    } elseif (preg_match('/for\s+(.+)/i', $text, $note)) {
+                        $ctx .= ' — for ' . rtrim(trim($note[1]), '.');
+                    }
+                    $rules[] = array(
+                        'rule_type' => 'preferred_term',
+                        'avoid_term' => '',
+                        'preferred_term' => $preferred,
+                        'context' => $ctx
+                    );
+                }
+                continue;
+            }
+            
+            // --- SEO-Friendly: "X" instead of "Y" ---
+            if (preg_match('/\*\*SEO[\-\s]*Friendly:\*\*\s*"([^"]+)"\s*instead\s+of\s*"([^"]+)"/i', $line, $matches)) {
                 $rules[] = array(
-                    'rule_type' => 'preferred_term',
-                    'avoid_term' => '',
-                    'preferred_term' => $matches[1],
+                    'rule_type' => 'seo_friendly',
+                    'avoid_term' => rtrim(trim($matches[2]), ','),
+                    'preferred_term' => rtrim(trim($matches[1]), ','),
                     'context' => $current_section
                 );
                 continue;
             }
             
-            // Parse SEO-friendly rules (e.g., - **SEO-Friendly:** "meditation practice" instead of "meditation ritual")
-            if (preg_match('/[•\-\*]\s*\*\*SEO-Friendly:\*\*\s*"([^"]+)"\s*instead of\s*"([^"]+)"/i', $line, $matches)) {
+            // --- SEO-Friendly: free-form (no quoted pair) → store as guideline note ---
+            if (preg_match('/\*\*SEO[\-\s]*Friendly:\*\*\s*(.+)/i', $line, $matches)) {
+                $text = rtrim(trim($matches[1]), '.');
                 $rules[] = array(
                     'rule_type' => 'seo_friendly',
-                    'avoid_term' => $matches[2],
-                    'preferred_term' => $matches[1],
+                    'avoid_term' => '',
+                    'preferred_term' => $text,
                     'context' => $current_section
+                );
+                continue;
+            }
+            
+            // --- Meta/Content strategy lines → store as seo_friendly notes ---
+            if (preg_match('/\*\*(Meta[^:]*|Content|Strategy):\*\*\s*(.+)/i', $line, $matches)) {
+                $text = rtrim(trim($matches[2]), '.');
+                $rules[] = array(
+                    'rule_type' => 'seo_friendly',
+                    'avoid_term' => '',
+                    'preferred_term' => $text,
+                    'context' => $current_section . ' — ' . trim($matches[1])
                 );
                 continue;
             }
@@ -277,6 +364,10 @@ class MFSEO_Guidelines_Engine {
      */
     private function import_rules_to_database($rules, $source_filename) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return new WP_Error('table_missing', __('Guidelines table is not available. Try deactivating and reactivating the plugin.', 'mindfulseo'));
+        }
         
         foreach ($rules as $rule) {
             $wpdb->insert(
@@ -305,6 +396,10 @@ class MFSEO_Guidelines_Engine {
      */
     public function get_all_rules($args = array()) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return array();
+        }
         
         $defaults = array(
             'rule_type' => '',
@@ -416,10 +511,17 @@ class MFSEO_Guidelines_Engine {
      *
      * @return string
      */
+    private $_cached_context = null;
+    
     public function generate_ai_context() {
+        if ($this->_cached_context !== null) {
+            return $this->_cached_context;
+        }
+        
         $rules = $this->get_all_rules();
         
         if (empty($rules)) {
+            $this->_cached_context = '';
             return '';
         }
         
@@ -454,7 +556,11 @@ class MFSEO_Guidelines_Engine {
         if (isset($grouped_rules['seo_friendly'])) {
             $context .= "SEO-FRIENDLY ALTERNATIVES:\n";
             foreach ($grouped_rules['seo_friendly'] as $rule) {
-                $context .= "- Use \"{$rule->preferred_term}\" instead of \"{$rule->avoid_term}\"\n";
+                if (!empty($rule->avoid_term)) {
+                    $context .= "- Use \"{$rule->preferred_term}\" instead of \"{$rule->avoid_term}\"\n";
+                } else {
+                    $context .= "- Target phrase to incorporate: \"{$rule->preferred_term}\"\n";
+                }
             }
             $context .= "\n";
         }
@@ -467,6 +573,7 @@ class MFSEO_Guidelines_Engine {
             }
         }
         
+        $this->_cached_context = $context;
         return $context;
     }
     
@@ -507,13 +614,17 @@ class MFSEO_Guidelines_Engine {
      */
     public function get_statistics() {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return array(
+                'total' => 0,
+                'by_type' => array(),
+                'sources' => array(),
+            );
+        }
         
         $stats = array();
-        
-        // Total rules
-        $stats['total'] = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE active = 1");
-        
-        // By type
+        $stats['total'] = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE active = 1");
         $stats['by_type'] = $wpdb->get_results(
             "SELECT rule_type, COUNT(*) as count 
              FROM {$this->table_name} 
@@ -521,8 +632,6 @@ class MFSEO_Guidelines_Engine {
              GROUP BY rule_type",
             OBJECT_K
         );
-        
-        // Uploaded files
         $stats['sources'] = $wpdb->get_results(
             "SELECT guideline_source, COUNT(*) as count 
              FROM {$this->table_name} 
@@ -540,6 +649,10 @@ class MFSEO_Guidelines_Engine {
      */
     public function deactivate_rule($rule_id) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return false;
+        }
         
         return $wpdb->update(
             $this->table_name,
@@ -558,6 +671,10 @@ class MFSEO_Guidelines_Engine {
      */
     public function activate_rule($rule_id) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return false;
+        }
         
         return $wpdb->update(
             $this->table_name,
@@ -576,13 +693,27 @@ class MFSEO_Guidelines_Engine {
      */
     public function add_rule($rule) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return new WP_Error('table_missing', __('Guidelines table is not available. Try deactivating and reactivating the plugin.', 'mindfulseo'));
+        }
         
-        // Validate required fields
         if (empty($rule['rule_type'])) {
             return new WP_Error('invalid_rule', __('Rule type is required.', 'mindfulseo'));
         }
         
-        // Insert rule
+        $avoid = isset($rule['avoid_term']) ? sanitize_text_field($rule['avoid_term']) : '';
+        $preferred = isset($rule['preferred_term']) ? sanitize_text_field($rule['preferred_term']) : '';
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$this->table_name} WHERE rule_type = %s AND avoid_term = %s AND preferred_term = %s LIMIT 1",
+            sanitize_text_field($rule['rule_type']),
+            $avoid,
+            $preferred
+        ));
+        if ($existing) {
+            return new WP_Error('duplicate_rule', __('This guideline rule already exists.', 'mindfulseo'));
+        }
+        
         $result = $wpdb->insert(
             $this->table_name,
             array(
@@ -612,6 +743,10 @@ class MFSEO_Guidelines_Engine {
      */
     public function delete_rule($rule_id) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return false;
+        }
         
         return $wpdb->delete(
             $this->table_name,
@@ -628,6 +763,10 @@ class MFSEO_Guidelines_Engine {
      */
     public function delete_rules_by_source($source_filename) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return 0;
+        }
         
         $result = $wpdb->delete(
             $this->table_name,

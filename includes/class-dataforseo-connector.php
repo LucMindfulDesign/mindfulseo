@@ -159,8 +159,7 @@ class MFSEO_DataForSEO_Connector {
             return new WP_Error('no_keywords', __('No keywords provided.', 'mindfulseo'));
         }
         
-        // DataForSEO allows max 1000 keywords per request, but we'll batch to 100 for safety
-        $keywords = array_slice($keywords, 0, 100);
+        $keywords = array_slice($keywords, 0, 700);
         
         // Prepare the request
         $post_data = array(
@@ -177,7 +176,7 @@ class MFSEO_DataForSEO_Connector {
                 'Content-Type' => 'application/json',
             ),
             'body' => json_encode($post_data),
-            'timeout' => 60,
+            'timeout' => 90,
         ));
         
         if (is_wp_error($response)) {
@@ -193,11 +192,30 @@ class MFSEO_DataForSEO_Connector {
             $this->logger->log_error('DataForSEO API Error', $error_message);
             return new WP_Error('api_error', $error_message);
         }
+
+        $kw_count = count($keywords);
+        $this->log_dataforseo_cost('search_volume', $kw_count, 0.01 + ($kw_count * 0.0001));
         
         // Parse the response
         return $this->parse_keyword_response($body);
     }
     
+    /**
+     * Log an estimated DataForSEO credit cost.
+     * Provider stored as 'dataforseo' (fits VARCHAR(20)).
+     * prompt_tokens = item/keyword count; completion_tokens = 0.
+     * Standard Labs/Ads endpoints: $0.01/task + $0.0001/keyword.
+     *
+     * @param string $endpoint  Short endpoint label (unused in DB, for readability only)
+     * @param int    $items     Number of keywords/URLs in the request
+     * @param float  $cost      Estimated USD cost
+     */
+    private function log_dataforseo_cost($endpoint, $items, $cost) {
+        if ($this->logger && method_exists($this->logger, 'log_api_call')) {
+            $this->logger->log_api_call('dataforseo', intval($items), 0, $cost);
+        }
+    }
+
     /**
      * Parse keyword response from DataForSEO
      * 
@@ -208,36 +226,64 @@ class MFSEO_DataForSEO_Connector {
         $results = array();
         
         if (!isset($response['tasks']) || empty($response['tasks'])) {
+            error_log('MindfulSEO DataForSEO: Search volume response has no tasks');
             return $results;
         }
         
-        foreach ($response['tasks'] as $task) {
+        foreach ($response['tasks'] as $task_index => $task) {
+            $status = isset($task['status_code']) ? $task['status_code'] : 'N/A';
+            error_log('MindfulSEO DataForSEO: Search volume task ' . $task_index . ' status: ' . $status);
+
             if ($task['status_code'] !== 20000) {
+                $msg = isset($task['status_message']) ? $task['status_message'] : 'unknown';
+                error_log('MindfulSEO DataForSEO: Search volume task failed: ' . $msg);
                 continue;
             }
             
             if (!isset($task['result']) || empty($task['result'])) {
+                error_log('MindfulSEO DataForSEO: Search volume task has no result');
                 continue;
             }
-            
-            foreach ($task['result'] as $result) {
-                $keyword = isset($result['keyword']) ? $result['keyword'] : '';
-                
-                if (empty($keyword)) {
-                    continue;
+
+            error_log('MindfulSEO DataForSEO: Search volume result count: ' . count($task['result']));
+
+            foreach ($task['result'] as $ri => $result) {
+                if ($ri === 0) {
+                    error_log('MindfulSEO DataForSEO: Search volume sample result keys: ' . implode(', ', array_keys($result)));
                 }
-                
-                $results[$keyword] = array(
-                    'search_volume' => isset($result['search_volume']) && $result['search_volume'] !== null ? intval($result['search_volume']) : null,
-                    'competition' => isset($result['competition']) && $result['competition'] !== null ? floatval($result['competition']) : null,
-                    'cpc' => isset($result['cpc']) && $result['cpc'] !== null ? floatval($result['cpc']) : null,
-                    // DataForSEO doesn't provide keyword difficulty in search_volume endpoint
-                    // Would need to use a different endpoint or service for that
-                    'keyword_difficulty' => null,
-                );
+
+                // Handle both flat results and results with nested items
+                $items = array();
+                if (isset($result['items']) && is_array($result['items'])) {
+                    $items = $result['items'];
+                } elseif (isset($result['keyword'])) {
+                    $items = array($result);
+                }
+
+                foreach ($items as $ii => $item) {
+                    $keyword = isset($item['keyword']) ? $item['keyword'] : '';
+                    if (empty($keyword)) {
+                        continue;
+                    }
+
+                    $sv = isset($item['search_volume']) && $item['search_volume'] !== null ? intval($item['search_volume']) : null;
+                    $cpc_val = isset($item['cpc']) && $item['cpc'] !== null ? floatval($item['cpc']) : null;
+
+                    if ($ii < 3) {
+                        error_log('MindfulSEO DataForSEO: Volume "' . $keyword . '" sv=' . ($sv !== null ? $sv : 'NULL') . ' cpc=' . ($cpc_val !== null ? $cpc_val : 'NULL'));
+                    }
+
+                    $results[$keyword] = array(
+                        'search_volume' => $sv,
+                        'competition' => isset($item['competition']) && $item['competition'] !== null ? floatval($item['competition']) : null,
+                        'cpc' => $cpc_val,
+                        'keyword_difficulty' => null,
+                    );
+                }
             }
         }
         
+        error_log('MindfulSEO DataForSEO: Parsed ' . count($results) . ' search volume results');
         return $results;
     }
     
@@ -254,8 +300,7 @@ class MFSEO_DataForSEO_Connector {
             return new WP_Error('not_configured', __('DataForSEO API not configured.', 'mindfulseo'));
         }
         
-        // Limit to 100 keywords
-        $keywords = array_slice($keywords, 0, 100);
+        $keywords = array_slice($keywords, 0, 700);
         
         $post_data = array(
             array(
@@ -272,7 +317,7 @@ class MFSEO_DataForSEO_Connector {
                 'Content-Type' => 'application/json',
             ),
             'body' => json_encode($post_data),
-            'timeout' => 60,
+            'timeout' => 90,
         ));
         
         if (is_wp_error($response)) {
@@ -288,6 +333,9 @@ class MFSEO_DataForSEO_Connector {
             $this->logger->log_error('DataForSEO Difficulty API Error', $error_message);
             return new WP_Error('api_error', $error_message);
         }
+
+        $kw_count = count($keywords);
+        $this->log_dataforseo_cost('bulk_keyword_difficulty', $kw_count, 0.01 + ($kw_count * 0.0001));
         
         return $this->parse_difficulty_response($body);
     }
@@ -368,13 +416,18 @@ class MFSEO_DataForSEO_Connector {
      * @return array|WP_Error
      */
     public function get_combined_metrics($keywords, $location_code = '2840', $language_code = 'en') {
+        error_log('MindfulSEO DataForSEO: get_combined_metrics called with ' . count($keywords) . ' keywords, location=' . $location_code . ', lang=' . $language_code);
+
         // Get search volume and CPC
         $volume_data = $this->get_keyword_metrics($keywords, $location_code, $language_code);
         
         if (is_wp_error($volume_data)) {
+            error_log('MindfulSEO DataForSEO: Search volume API FAILED: ' . $volume_data->get_error_message());
             return $volume_data;
         }
-        
+
+        error_log('MindfulSEO DataForSEO: Search volume returned ' . count($volume_data) . ' results');
+
         // Get keyword difficulty
         $difficulty_data = $this->get_keyword_difficulty($keywords, $location_code, $language_code);
         
@@ -382,21 +435,151 @@ class MFSEO_DataForSEO_Connector {
             return $difficulty_data;
         }
         
-        // Merge the results
+        // Normalize API response keys to lowercase for case-insensitive matching
+        $vol_lower = array();
+        foreach ($volume_data as $k => $v) {
+            $vol_lower[ strtolower($k) ] = $v;
+        }
+        $diff_lower = array();
+        foreach ($difficulty_data as $k => $v) {
+            $diff_lower[ strtolower($k) ] = $v;
+        }
+
         $combined = array();
-        
         foreach ($keywords as $keyword) {
+            $kl = strtolower($keyword);
             $combined[$keyword] = array(
-                // Only set if we have actual data from API (don't default to 0)
-                'search_volume' => isset($volume_data[$keyword]['search_volume']) ? $volume_data[$keyword]['search_volume'] : null,
-                'cpc' => isset($volume_data[$keyword]['cpc']) ? $volume_data[$keyword]['cpc'] : null,
-                'keyword_difficulty' => isset($difficulty_data[$keyword]['keyword_difficulty']) ? $difficulty_data[$keyword]['keyword_difficulty'] : null,
+                'search_volume' => isset($vol_lower[$kl]['search_volume']) ? $vol_lower[$kl]['search_volume'] : null,
+                'cpc' => isset($vol_lower[$kl]['cpc']) ? $vol_lower[$kl]['cpc'] : null,
+                'keyword_difficulty' => isset($diff_lower[$kl]['keyword_difficulty']) ? $diff_lower[$kl]['keyword_difficulty'] : null,
             );
         }
         
         return $combined;
     }
-    
+
+    /**
+     * Fallback: get keyword data from DataForSEO Labs Keyword Overview endpoint.
+     * This endpoint uses DataForSEO's own database (Google Ads + clickstream)
+     * and often returns data for keywords that the raw Google Ads endpoint misses.
+     *
+     * @param array  $keywords       Array of keyword strings (max 700)
+     * @param string $location_code  Location code
+     * @param string $language_code  Language code
+     * @return array|WP_Error  Keyed by keyword => array(search_volume, keyword_difficulty, cpc)
+     */
+    public function get_keyword_overview_labs($keywords, $location_code = '2840', $language_code = 'en') {
+        if (!$this->is_configured()) {
+            return new WP_Error('not_configured', __('DataForSEO API not configured.', 'mindfulseo'));
+        }
+
+        if (empty($keywords)) {
+            return array();
+        }
+
+        $keywords = array_slice($keywords, 0, 700);
+
+        $post_data = array(
+            array(
+                'keywords'      => array_values($keywords),
+                'location_code' => intval($location_code),
+                'language_code' => $language_code,
+            ),
+        );
+
+        error_log('MindfulSEO DataForSEO: Labs keyword_overview fallback with ' . count($keywords) . ' keywords');
+
+        $response = wp_remote_post($this->api_url . 'dataforseo_labs/google/keyword_overview/live', array(
+            'headers' => array(
+                'Authorization' => 'Basic ' . base64_encode($this->login . ':' . $this->password),
+                'Content-Type'  => 'application/json',
+            ),
+            'body'    => json_encode($post_data),
+            'timeout' => 90,
+        ));
+
+        if (is_wp_error($response)) {
+            $this->logger->log_error('DataForSEO Labs Keyword Overview Error', $response->get_error_message());
+            return $response;
+        }
+
+        $status_code = wp_remote_retrieve_response_code($response);
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+
+        if ($status_code !== 200) {
+            $error_message = isset($body['status_message']) ? $body['status_message'] : __('API request failed.', 'mindfulseo');
+            $this->logger->log_error('DataForSEO Labs Keyword Overview Error', $error_message);
+            return new WP_Error('api_error', $error_message);
+        }
+
+        $kw_count = count($keywords);
+        $this->log_dataforseo_cost('keyword_overview', $kw_count, 0.01 + ($kw_count * 0.0001));
+
+        return $this->parse_keyword_overview_response($body);
+    }
+
+    /**
+     * Parse the Labs keyword_overview response into a simple keyed array.
+     *
+     * @param array $response Raw API response body
+     * @return array  keyword => array(search_volume, keyword_difficulty, cpc)
+     */
+    private function parse_keyword_overview_response($response) {
+        $results = array();
+
+        if (!isset($response['tasks']) || empty($response['tasks'])) {
+            return $results;
+        }
+
+        foreach ($response['tasks'] as $task) {
+            if (!isset($task['status_code']) || $task['status_code'] !== 20000) {
+                continue;
+            }
+            if (!isset($task['result']) || empty($task['result'])) {
+                continue;
+            }
+
+            foreach ($task['result'] as $result) {
+                if (!isset($result['items']) || empty($result['items'])) {
+                    continue;
+                }
+
+                foreach ($result['items'] as $item) {
+                    $keyword = isset($item['keyword']) ? $item['keyword'] : '';
+                    if (empty($keyword)) {
+                        continue;
+                    }
+
+                    $sv  = null;
+                    $cpc = null;
+                    $kd  = null;
+
+                    if (isset($item['keyword_info']) && is_array($item['keyword_info'])) {
+                        $ki = $item['keyword_info'];
+                        $sv  = isset($ki['search_volume']) && $ki['search_volume'] !== null ? intval($ki['search_volume']) : null;
+                        $cpc = isset($ki['cpc']) && $ki['cpc'] !== null ? floatval($ki['cpc']) : null;
+                    }
+
+                    if (isset($item['keyword_properties']) && is_array($item['keyword_properties'])) {
+                        $kp = $item['keyword_properties'];
+                        $kd = isset($kp['keyword_difficulty']) && $kp['keyword_difficulty'] !== null ? intval($kp['keyword_difficulty']) : null;
+                    }
+
+                    error_log('MindfulSEO DataForSEO Labs: "' . $keyword . '" sv=' . ($sv !== null ? $sv : 'NULL') . ' kd=' . ($kd !== null ? $kd : 'NULL') . ' cpc=' . ($cpc !== null ? $cpc : 'NULL'));
+
+                    $results[$keyword] = array(
+                        'search_volume'      => $sv,
+                        'keyword_difficulty'  => $kd,
+                        'cpc'                => $cpc,
+                    );
+                }
+            }
+        }
+
+        error_log('MindfulSEO DataForSEO Labs: Parsed ' . count($results) . ' keyword overview results');
+        return $results;
+    }
+
     /**
      * Get keywords that a domain ranks for (Domain Analysis)
      * 
@@ -452,6 +635,8 @@ class MFSEO_DataForSEO_Connector {
             $this->logger->log_error('DataForSEO keywords_for_site Error', $error_message);
             return new WP_Error('api_error', $error_message);
         }
+
+        $this->log_dataforseo_cost('keywords_for_site', $limit, 0.01 + ($limit * 0.0001));
         
         // Parse response
         return $this->parse_keywords_for_site_response($body);
@@ -550,6 +735,8 @@ class MFSEO_DataForSEO_Connector {
             $error_message = isset($body['status_message']) ? $body['status_message'] : __('API request failed.', 'mindfulseo');
             return new WP_Error('api_error', $error_message);
         }
+
+        $this->log_dataforseo_cost('related_keywords', $limit, 0.01 + ($limit * 0.0001));
         
         return $this->parse_keyword_expansion_response($body);
     }
@@ -599,6 +786,8 @@ class MFSEO_DataForSEO_Connector {
             $error_message = isset($body['status_message']) ? $body['status_message'] : __('API request failed.', 'mindfulseo');
             return new WP_Error('api_error', $error_message);
         }
+
+        $this->log_dataforseo_cost('keyword_suggestions', $limit, 0.01 + ($limit * 0.0001));
         
         return $this->parse_keyword_expansion_response($body);
     }
@@ -649,6 +838,8 @@ class MFSEO_DataForSEO_Connector {
             $error_message = isset($body['status_message']) ? $body['status_message'] : __('API request failed.', 'mindfulseo');
             return new WP_Error('api_error', $error_message);
         }
+
+        $this->log_dataforseo_cost('keyword_ideas', $limit, 0.01 + ($limit * 0.0001));
         
         return $this->parse_keyword_expansion_response($body);
     }
@@ -765,6 +956,8 @@ class MFSEO_DataForSEO_Connector {
             $this->logger->log_error('DataForSEO Lighthouse Error', $error_message);
             return new WP_Error('api_error', $error_message);
         }
+
+        $this->log_dataforseo_cost('lighthouse', 1, 0.002);
         
         // Parse response
         return $this->parse_lighthouse_response($body);
@@ -916,6 +1109,8 @@ class MFSEO_DataForSEO_Connector {
             $this->logger->log_error('DataForSEO Instant Pages Error', $error_message);
             return new WP_Error('api_error', $error_message);
         }
+
+        $this->log_dataforseo_cost('instant_pages', 1, 0.0015);
         
         // Parse response
         return $this->parse_instant_page_response($body);

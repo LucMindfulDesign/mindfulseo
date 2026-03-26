@@ -21,64 +21,65 @@ class MFSEO_API_Tester {
      * @param string $model Model to test with
      * @return array|WP_Error Test result or error
      */
-    public static function test_openai_connection($api_key, $model = 'gpt-3.5-turbo') {
+    public static function test_openai_connection($api_key, $model = 'gpt-4o-mini') {
         if (empty($api_key)) {
             return new WP_Error('empty_key', __('API key is required.', 'mindfulseo'));
         }
         
         $start_time = microtime(true);
         
-        // Use minimal test parameters - just check if the API key works
+        // Always test with gpt-4o-mini first -- it's cheap, fast, and
+        // available to ALL account tiers. This isolates "bad key" from
+        // "model not available on your tier".
+        $test_model = 'gpt-4o-mini';
+        
         $body = array(
-            'model' => $model,
+            'model' => $test_model,
             'messages' => array(
                 array(
                     'role' => 'user',
                     'content' => 'Hi'
                 )
-            )
+            ),
+            'max_tokens' => 5,
         );
         
-        // Only add max_tokens for models that support it (not GPT-5 or o-series)
-        if (!preg_match('/^(gpt-5|o1|o3)/', $model)) {
-            $body['max_tokens'] = 5;
-        } else {
-            // For newer models, use max_completion_tokens if they support it
-            if (preg_match('/^o/', $model)) {
-                // o-series models use different parameters
-                $body['max_completion_tokens'] = 100;
-            }
-        }
-        
-        // Make a minimal API call
         $response = wp_remote_post('https://api.openai.com/v1/chat/completions', array(
-            'timeout' => 15,
-            'headers' => array(
+            'timeout'   => 15,
+            'sslverify' => apply_filters('https_local_ssl_verify', true),
+            'headers'   => array(
                 'Authorization' => 'Bearer ' . $api_key,
-                'Content-Type' => 'application/json',
+                'Content-Type'  => 'application/json',
             ),
-            'body' => json_encode($body)
+            'body' => json_encode($body),
         ));
         
         $end_time = microtime(true);
         $response_time = round(($end_time - $start_time) * 1000); // in milliseconds
         
         if (is_wp_error($response)) {
-            return new WP_Error(
-                'connection_failed',
-                sprintf(__('Connection failed: %s', 'mindfulseo'), $response->get_error_message())
-            );
+            $err  = $response->get_error_message();
+            $hint = '';
+            if (strpos($err, 'SSL') !== false || strpos($err, 'certificate') !== false) {
+                $hint = ' (SSL error — common on local dev sites; your key may still be valid)';
+            } elseif (strpos($err, 'cURL error 6') !== false || strpos($err, 'resolve') !== false) {
+                $hint = ' (DNS error — check your internet connection)';
+            } elseif (strpos($err, 'timed out') !== false || strpos($err, 'Operation timed out') !== false) {
+                $hint = ' (timed out — OpenAI may be slow right now, try again)';
+            }
+            return new WP_Error('connection_failed', sprintf(__('Connection failed: %s', 'mindfulseo'), $err . $hint));
         }
-        
+
         $status_code = wp_remote_retrieve_response_code($response);
-        $body = json_decode(wp_remote_retrieve_body($response), true);
-        
+        $body        = json_decode(wp_remote_retrieve_body($response), true);
+
         if ($status_code === 401) {
-            return new WP_Error('invalid_key', __('Invalid API key. Please check your key and try again.', 'mindfulseo'));
+            return new WP_Error('invalid_key', __('Invalid API key — double-check at platform.openai.com/api-keys.', 'mindfulseo'));
         }
-        
+
         if ($status_code === 429) {
-            return new WP_Error('rate_limit', __('Rate limit exceeded. Please try again later.', 'mindfulseo'));
+            $error_msg = isset($body['error']['message']) ? $body['error']['message'] : 'No details provided';
+            return new WP_Error('rate_limit', sprintf('OpenAI rate limit: %s', $error_msg));
         }
         
         if ($status_code === 400) {
@@ -107,15 +108,19 @@ class MFSEO_API_Tester {
         
         if ($status_code !== 200) {
             $error_message = isset($body['error']['message']) ? $body['error']['message'] : __('Unknown error', 'mindfulseo');
-            return new WP_Error('api_error', $error_message);
+            return new WP_Error('api_error', sprintf('HTTP %d (model: %s): %s', $status_code, $model, $error_message));
         }
         
-        // Success
+        $msg = sprintf(__('API key works (%dms). Selected model: %s', 'mindfulseo'), $response_time, $model);
+        if ($model !== $test_model && $model !== 'gpt-4o-mini') {
+            $msg .= sprintf(__('. Note: %s may require a higher-tier OpenAI account.', 'mindfulseo'), $model);
+        }
+        
         return array(
             'success' => true,
             'model' => $model,
             'response_time' => $response_time,
-            'message' => sprintf(__('Connected successfully to %s (%dms)', 'mindfulseo'), $model, $response_time)
+            'message' => $msg
         );
     }
     
@@ -126,7 +131,7 @@ class MFSEO_API_Tester {
      * @param string $model Model to test with
      * @return array|WP_Error Test result or error
      */
-    public static function test_claude_connection($api_key, $model = 'claude-3-haiku-20240307') {
+    public static function test_claude_connection($api_key, $model = 'claude-sonnet-4-5') {
         if (empty($api_key)) {
             return new WP_Error('empty_key', __('API key is required.', 'mindfulseo'));
         }
@@ -135,39 +140,41 @@ class MFSEO_API_Tester {
         
         // Make a minimal API call
         $response = wp_remote_post('https://api.anthropic.com/v1/messages', array(
-            'timeout' => 15,
-            'headers' => array(
-                'x-api-key' => $api_key,
+            'timeout'   => 15,
+            'sslverify' => apply_filters('https_local_ssl_verify', true),
+            'headers'   => array(
+                'x-api-key'         => $api_key,
                 'anthropic-version' => '2023-06-01',
-                'Content-Type' => 'application/json',
+                'Content-Type'      => 'application/json',
             ),
             'body' => json_encode(array(
-                'model' => $model,
+                'model'      => $model,
                 'max_tokens' => 10,
-                'messages' => array(
-                    array(
-                        'role' => 'user',
-                        'content' => 'Hello'
-                    )
-                )
-            ))
+                'messages'   => array(
+                    array('role' => 'user', 'content' => 'Hi'),
+                ),
+            )),
         ));
-        
-        $end_time = microtime(true);
-        $response_time = round(($end_time - $start_time) * 1000); // in milliseconds
-        
+
+        $end_time      = microtime(true);
+        $response_time = round(($end_time - $start_time) * 1000);
+
         if (is_wp_error($response)) {
-            return new WP_Error(
-                'connection_failed',
-                sprintf(__('Connection failed: %s', 'mindfulseo'), $response->get_error_message())
-            );
+            $err  = $response->get_error_message();
+            $hint = '';
+            if (strpos($err, 'SSL') !== false || strpos($err, 'certificate') !== false) {
+                $hint = ' (SSL error — common on local dev sites; your key may still be valid)';
+            } elseif (strpos($err, 'timed out') !== false) {
+                $hint = ' (timed out — Anthropic may be slow right now, try again)';
+            }
+            return new WP_Error('connection_failed', sprintf(__('Connection failed: %s', 'mindfulseo'), $err . $hint));
         }
-        
+
         $status_code = wp_remote_retrieve_response_code($response);
-        $body = json_decode(wp_remote_retrieve_body($response), true);
-        
+        $body        = json_decode(wp_remote_retrieve_body($response), true);
+
         if ($status_code === 401) {
-            return new WP_Error('invalid_key', __('Invalid API key. Please check your key and try again.', 'mindfulseo'));
+            return new WP_Error('invalid_key', __('Invalid API key — double-check at console.anthropic.com.', 'mindfulseo'));
         }
         
         if ($status_code === 429) {
@@ -201,7 +208,7 @@ class MFSEO_API_Tester {
      * @param string $claude_model Claude model
      * @return array Test results
      */
-    public static function test_all_connections($openai_key, $claude_key, $openai_model = 'gpt-3.5-turbo', $claude_model = 'claude-3-haiku-20240307') {
+    public static function test_all_connections($openai_key, $claude_key, $openai_model = 'gpt-4o-mini', $claude_model = 'claude-sonnet-4-5') {
         $results = array(
             'openai' => null,
             'claude' => null,

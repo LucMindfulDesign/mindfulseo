@@ -11,32 +11,32 @@
     'use strict';
     
     const COLUMN_STORAGE_KEY = 'mindfulseoBatchColumns';
-    const COLUMN_ORDER_STORAGE_KEY = 'mindfulseoBatchColumnOrder';
+    /** Bumped when default column order changes (v3: Optimization next to Actions). */
+    const COLUMN_ORDER_STORAGE_KEY = 'mindfulseoBatchColumnOrder_v3';
     const DEFAULT_COLUMNS = {
         current_keyword: true,
-        search_volume: true,
-        difficulty: true,
-        current_rank: true,
         seo_title: true,
         meta_description: true,
         slug: true,
         type: true,
         status: true,
-        seo_score: true,
         optimization: true,
+        search_volume: true,
+        difficulty: true,
+        current_rank: true,
         actions: true
     };
+    /** Vol/KD/Rank then Optimization + Actions together (status visible beside Re-Optimize when scrolling wide tables) */
     const DEFAULT_COLUMN_ORDER = [
         'current_keyword',
-        'search_volume',
-        'difficulty',
-        'current_rank',
         'seo_title',
         'meta_description',
         'slug',
         'type',
         'status',
-        'seo_score',
+        'search_volume',
+        'difficulty',
+        'current_rank',
         'optimization',
         'actions'
     ];
@@ -409,11 +409,33 @@
             startBatchOptimization();
         });
         
-        $('#close-progress-modal').on('click', function() {
-            $('#batch-progress-modal').hide();
-            // Don't reload - table already updated in real-time
+        // Close progress bar
+        $('#mfseo-close-progress').on('click', function() {
+            $('#mfseo-inline-progress').slideUp(200);
+        });
+        
+        // Toggle detailed log in the top progress bar
+        $('#mfseo-toggle-details').on('click', function() {
+            const $details = $('#mfseo-progress-details');
+            const $icon = $(this).find('.dashicons');
+            const $label = $(this).find('span:last');
+            
+            if ($details.is(':visible')) {
+                $details.slideUp(200);
+                $icon.removeClass('dashicons-arrow-up-alt2').addClass('dashicons-arrow-down-alt2');
+                $label.text('See Details');
+            } else {
+                $details.slideDown(200);
+                $icon.removeClass('dashicons-arrow-down-alt2').addClass('dashicons-arrow-up-alt2');
+                $label.text('Hide Details');
+            }
         });
     }
+    
+    var CONCURRENCY = 8;
+    var completedCount = 0;
+    var activeRequests = 0;
+    var nextQueueIndex = 0;
     
     /**
      * Start batch optimization process
@@ -422,47 +444,69 @@
         isOptimizing = true;
         optimizationQueue = [...selectedPosts];
         currentIndex = 0;
+        completedCount = 0;
+        activeRequests = 0;
+        nextQueueIndex = 0;
         stats = {
             total: selectedPosts.length,
             success: 0,
             errors: 0
         };
         
-        // Show progress modal
-        $('#batch-progress-modal').show();
-        $('#batch-progress-total').text(stats.total);
-        $('#close-progress-modal').prop('disabled', true);
-        $('#batch-progress-log').html('');
+        // Reset and show the sticky top progress bar
+        $('#mfseo-progress-bar').css('width', '0%');
+        $('#mfseo-progress-count').text(0);
+        $('#mfseo-progress-total').text(stats.total);
+        $('#mfseo-progress-success').text('0 successful').removeClass('mfseo-progress-done');
+        $('#mfseo-progress-errors').text('0 errors');
+        $('#mfseo-progress-log').html('');
+        $('#mfseo-progress-details').hide();
+        $('#mfseo-progress-title').text('Optimizing with AI...');
+        $('#mfseo-progress-spinner').removeClass('mfseo-progress-spinner--done').show();
+        $('#mfseo-view-optimized').hide();
+        $('#mfseo-inline-progress').slideDown(300);
+        
+        // Scroll to the top so the bar is visible
+        $('html, body').animate({ scrollTop: $('#mfseo-inline-progress').offset().top - 50 }, 300);
         
         // Disable all controls
         $('.post-checkbox, #select-all-header, #batch-optimize-btn').prop('disabled', true);
         
-        // Start processing
-        processNextPost();
+        // Launch up to CONCURRENCY posts in parallel
+        fillConcurrencySlots();
     }
     
     /**
-     * Process next post in queue
+     * Fill available concurrency slots with pending posts
      */
-    function processNextPost() {
-        if (currentIndex >= optimizationQueue.length) {
-            // All done!
-            finishBatchOptimization();
-            return;
+    function fillConcurrencySlots() {
+        while (activeRequests < CONCURRENCY && nextQueueIndex < optimizationQueue.length) {
+            var idx = nextQueueIndex;
+            nextQueueIndex++;
+            
+            var postId = optimizationQueue[idx];
+            var $row = $('tr[data-post-id="' + postId + '"]');
+            var postTitle = $row.find('td:nth-child(2) strong').text().trim();
+            
+            activeRequests++;
+            optimizeSinglePost(postId, postTitle, $row, 0);
         }
         
-        const postId = optimizationQueue[currentIndex];
-        const $row = $(`tr[data-post-id="${postId}"]`);
-        const postTitle = $row.find('td:nth-child(2) strong').text().trim();
+        if (activeRequests === 0 && nextQueueIndex >= optimizationQueue.length) {
+            finishBatchOptimization();
+        }
+    }
+    
+    var MAX_RETRIES = 1;
+    
+    function optimizeSinglePost(postId, postTitle, $row, attempt) {
+        var label = attempt > 0 ? ' (retry ' + attempt + ')' : '';
+        logProgress('Optimizing: ' + postTitle + '...' + label, 'info');
         
-        // Update UI
-        $('#current-post-title').text(postTitle);
-        logProgress(`Optimizing: ${postTitle}...`, 'info');
-        
-        // Call AJAX to optimize post
         $.ajax({
             url: mfseoBatchOptimizer.ajaxUrl,
             method: 'POST',
+            timeout: 180000,
             data: {
                 action: 'mindfulseo_batch_optimize_single',
                 nonce: mfseoBatchOptimizer.nonce,
@@ -471,57 +515,80 @@
             success: function(response) {
                 if (response.success) {
                     stats.success++;
-                    logProgress(`✅ ${postTitle} - Optimized successfully`, 'success');
+                    logProgress('✅ ' + postTitle + ' - Optimized successfully', 'success');
                     
-                    // Update table row with real-time SEO data
                     if (response.data && response.data.seo_data) {
-                        const seoData = response.data.seo_data;
+                        var seoData = response.data.seo_data;
                         
-                        // Update optimization status badge
                         $row.find('.opt-badge').html('✅ Optimized<br><small>Just now</small>');
                         $row.data('status', 'approved');
                         
-                        // Update SEO fields in the table (columns 3-6)
                         $row.find('td:nth-child(3) .editable').text(seoData.keyword !== '—' ? seoData.keyword : '');
                         $row.find('td:nth-child(4) .editable').text(seoData.title !== '—' ? seoData.title.substring(0, 60) : '');
                         $row.find('td:nth-child(5) .editable').text(seoData.description !== '—' ? seoData.description.substring(0, 160) : '');
                         $row.find('td:nth-child(6) .editable').text(seoData.slug !== '—' ? seoData.slug : '');
                     }
+                    advanceQueue();
+                } else {
+                    var errMsg = response.data || 'Optimization failed';
+                    var isRetryable = typeof errMsg === 'string' && (
+                        errMsg.indexOf('empty response') !== -1 ||
+                        errMsg.indexOf('Empty response') !== -1 ||
+                        errMsg.indexOf('timed out') !== -1 ||
+                        errMsg.indexOf('timeout') !== -1
+                    );
+                    
+                    if (isRetryable && attempt < MAX_RETRIES) {
+                        logProgress('⚠️ ' + postTitle + ' - ' + errMsg + ' — retrying in 3s...', 'warning');
+                        setTimeout(function() {
+                            optimizeSinglePost(postId, postTitle, $row, attempt + 1);
+                        }, 3000);
+                    } else {
+                        stats.errors++;
+                        logProgress('❌ ' + postTitle + ' - ' + errMsg, 'error');
+                        advanceQueue();
+                    }
+                }
+            },
+            error: function(xhr, status) {
+                var reason = status === 'timeout'
+                    ? 'Request timed out (AI took too long)'
+                    : 'Network error';
+                
+                if (attempt < MAX_RETRIES) {
+                    logProgress('⚠️ ' + postTitle + ' - ' + reason + ' — retrying in 3s...', 'warning');
+                    setTimeout(function() {
+                        optimizeSinglePost(postId, postTitle, $row, attempt + 1);
+                    }, 3000);
                 } else {
                     stats.errors++;
-                    logProgress(`❌ ${postTitle} - ${response.data || 'Optimization failed'}`, 'error');
+                    logProgress('❌ ' + postTitle + ' - ' + reason, 'error');
+                    advanceQueue();
                 }
-                
-                currentIndex++;
-                updateProgress();
-                
-                // Continue to next post
-                setTimeout(processNextPost, 500); // Small delay between posts
-            },
-            error: function() {
-                stats.errors++;
-                logProgress(`❌ ${postTitle} - Network error`, 'error');
-                
-                currentIndex++;
-                updateProgress();
-                
-                // Continue despite error
-                setTimeout(processNextPost, 500);
             }
         });
     }
     
+    function advanceQueue() {
+        completedCount++;
+        activeRequests--;
+        currentIndex = completedCount;
+        updateProgress();
+        setTimeout(fillConcurrencySlots, 50);
+    }
+    
     /**
-     * Update progress bar and counts
+     * Update progress bar and counts (both modal and inline card)
      */
     function updateProgress() {
         const percent = Math.round((currentIndex / stats.total) * 100);
         
-        $('#batch-progress-fill').css('width', percent + '%');
-        $('#batch-progress-percent').text(percent + '%');
-        $('#progress-current').text(currentIndex);
-        $('#progress-success').text(stats.success);
-        $('#progress-errors').text(stats.errors);
+        // Update the top progress bar
+        $('#mfseo-progress-bar').css('width', percent + '%');
+        $('#mfseo-progress-count').text(currentIndex);
+        $('#mfseo-progress-success').text(stats.success + ' successful');
+        $('#mfseo-progress-errors').text(stats.errors + ' errors');
+        $('#mfseo-progress-detail').text(percent + '%');
     }
     
     /**
@@ -530,20 +597,18 @@
     function logProgress(message, type = 'info') {
         const timestamp = new Date().toLocaleTimeString();
         const typeClass = `log-${type}`;
-        const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+        const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️';
         
         const logEntry = `
-            <div class="progress-log-entry ${typeClass}">
-                <span class="log-time">${timestamp}</span>
-                <span class="log-icon">${icon}</span>
-                <span class="log-message">${message}</span>
+            <div class="mfseo-log-entry mfseo-log-${type}">
+                <span class="mfseo-log-time">${timestamp}</span>
+                <span class="mfseo-log-icon">${icon}</span>
+                <span class="mfseo-log-message">${message}</span>
             </div>
         `;
         
-        $('#batch-progress-log').prepend(logEntry);
-        
-        // Scroll to top
-        $('#batch-progress-log').scrollTop(0);
+        $('#mfseo-progress-log').prepend(logEntry);
+        $('#mfseo-progress-log').scrollTop(0);
     }
     
     /**
@@ -551,9 +616,25 @@
      */
     function finishBatchOptimization() {
         isOptimizing = false;
-        $('#close-progress-modal').prop('disabled', false);
         
         logProgress(`Batch optimization complete! ${stats.success} successful, ${stats.errors} errors.`, 'success');
+        
+        // Update the progress bar to show completion state
+        $('#mfseo-progress-title').text('Optimization Complete');
+        $('#mfseo-progress-detail').text('100%');
+        $('#mfseo-progress-bar').css('width', '100%');
+        $('#mfseo-progress-spinner').addClass('mfseo-progress-spinner--done');
+        
+        // Show "View Optimized Posts" button
+        if (stats.success > 0) {
+            $('#mfseo-view-optimized').show();
+        }
+        
+        // Auto-expand the details log
+        $('#mfseo-progress-details').slideDown(200);
+        const $toggleBtn = $('#mfseo-toggle-details');
+        $toggleBtn.find('.dashicons').removeClass('dashicons-arrow-down-alt2').addClass('dashicons-arrow-up-alt2');
+        $toggleBtn.find('span:last').text('Hide Details');
         
         // Re-enable controls
         $('.post-checkbox, #select-all-header, #batch-optimize-btn').prop('disabled', false);
@@ -1008,7 +1089,6 @@
         
         var $button = $(this);
         
-        // Collect all unique keywords from the current page
         var keywords = [];
         $('#posts-table tbody tr').each(function() {
             var keyword = $(this).find('[data-column="current_keyword"] .editable').text().trim();
@@ -1017,7 +1097,6 @@
             }
         });
         
-        // Remove duplicates
         keywords = [...new Set(keywords)];
         
         console.log('Collected ' + keywords.length + ' unique keywords from page:', keywords.slice(0, 5));
@@ -1029,37 +1108,48 @@
         
         $button.prop('disabled', true).html('<span class="dashicons dashicons-update dashicons-spin" style="vertical-align: middle;"></span> Refreshing ' + keywords.length + ' Keywords...');
         
-        console.log('AJAX URL:', mfseoBatchOptimizer.ajaxUrl);
-        console.log('Nonce:', mfseoBatchOptimizer.nonce);
-        
         $.ajax({
             url: mfseoBatchOptimizer.ajaxUrl,
             method: 'POST',
             data: {
                 action: 'mindfulseo_recalculate_rankmath_scores',
                 nonce: mfseoBatchOptimizer.nonce,
-                keywords: keywords  // Send the actual keywords from this page
+                keywords: keywords
             },
             success: function(response) {
                 console.log('AJAX Success:', response);
                 
                 if (response.success) {
-                    $button.html('<span class="dashicons dashicons-update dashicons-spin" style="vertical-align: middle;"></span> Reloading...');
-                    
-                    // Show success message
-                    if (response.data.message) {
-                        alert(response.data.message);
-                    }
-                    
-                    // Reload page to show updated data
-                    if (response.data.reload) {
-                        location.reload();
-                    } else {
+                    // Check if this is info_only (DataForSEO not configured)
+                    if (response.data.info_only) {
+                        // Show friendly blue info box, no page reload
                         $button.prop('disabled', false).html('<span class="dashicons dashicons-update" style="vertical-align: middle;"></span> Refresh Metrics');
+                        showNotice('info', response.data.message);
+                        // Auto-fade after 10 seconds
+                        setTimeout(function() {
+                            $('.mindfulseo-notice').fadeOut(500);
+                        }, 10000);
+                    } else {
+                        // Normal success with data refresh
+                        $button.html('<span class="dashicons dashicons-update dashicons-spin" style="vertical-align: middle;"></span> Reloading...');
+                        
+                        // Show success message
+                        if (response.data.message) {
+                            showNotice('success', response.data.message);
+                        }
+                        
+                        // Reload page to show updated data
+                        if (response.data.reload) {
+                            setTimeout(function() {
+                                location.reload();
+                            }, 1500);
+                        } else {
+                            $button.prop('disabled', false).html('<span class="dashicons dashicons-update" style="vertical-align: middle;"></span> Refresh Metrics');
+                        }
                     }
                 } else {
                     console.error('AJAX Error:', response.data);
-                    alert('Error: ' + (response.data.message || 'Failed to refresh metrics'));
+                    showNotice('error', 'Error: ' + (response.data.message || 'Failed to refresh metrics'));
                     $button.prop('disabled', false).html('<span class="dashicons dashicons-update" style="vertical-align: middle;"></span> Refresh Metrics');
                 }
             },
@@ -1140,21 +1230,33 @@
     // Custom Prompts Section
     // ================================================
     
-    // Toggle prompts section
-    $('.toggle-prompts-btn, .mindfulseo-section-header').on('click', function(e) {
+    // Toggle prompts — single handler on header only (button is inside header; two handlers used to fire twice and instantly re-close).
+    $(document).on('click', '.mindfulseo-custom-prompts-section > .mindfulseo-section-header', function(e) {
         e.preventDefault();
-        const $button = $('.toggle-prompts-btn');
-        const $content = $('.prompts-content');
-        const $icon = $button.find('.dashicons');
-        
+        const $header = $(this);
+        const $section = $header.closest('.mindfulseo-custom-prompts-section');
+        const $content = $section.find('.prompts-content');
+        const $button = $section.find('.toggle-prompts-btn');
+        const $icon = $button.find('.toggle-prompts-icon');
+        const $label = $button.find('.toggle-prompts-label');
+        const i18n = (typeof mfseoBatchOptimizer !== 'undefined' && mfseoBatchOptimizer.i18n) ? mfseoBatchOptimizer.i18n : {};
+        const showTxt = i18n.showCustomPrompts || 'Show';
+        const hideTxt = i18n.hideCustomPrompts || 'Hide';
+
         if ($content.is(':visible')) {
-            $content.slideUp(200);
+            $content.slideUp(200, function() {
+                $content.attr('aria-hidden', 'true');
+            });
             $icon.removeClass('dashicons-arrow-up-alt2').addClass('dashicons-arrow-down-alt2');
-            $button.find('text').text('Show');
+            $label.text(showTxt);
+            $button.attr('aria-expanded', 'false');
         } else {
-            $content.slideDown(200);
+            $content.slideDown(200, function() {
+                $content.attr('aria-hidden', 'false');
+            });
             $icon.removeClass('dashicons-arrow-down-alt2').addClass('dashicons-arrow-up-alt2');
-            $button.find('text').text('Hide');
+            $label.text(hideTxt);
+            $button.attr('aria-expanded', 'true');
         }
     });
     
@@ -1202,7 +1304,9 @@
         const promptType = $button.data('prompt-type');
         
         $button.prop('disabled', true).html('<span class="dashicons dashicons-update dashicons-spin"></span> Resetting...');
-        
+
+        const resetBtnHtml = '<span class="dashicons dashicons-update"></span> Reset to Default';
+
         $.ajax({
             url: mfseoBatchOptimizer.ajaxUrl,
             type: 'POST',
@@ -1216,15 +1320,16 @@
                 if (response.success) {
                     $('#batch-optimizer-prompt').val('');
                     alert('Prompt reset to default successfully!');
-                    $button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> Reset to Default');
                 } else {
-                    alert('Error resetting prompt: ' + response.data.message);
-                    $button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> Reset to Default');
+                    var errMsg = (response.data && response.data.message) ? response.data.message : (response.data || 'Unknown error');
+                    alert('Error resetting prompt: ' + errMsg);
                 }
             },
             error: function() {
                 alert('Error resetting prompt. Please try again.');
-                $button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> Reset to Default');
+            },
+            complete: function() {
+                $button.prop('disabled', false).html(resetBtnHtml);
             }
         });
     });

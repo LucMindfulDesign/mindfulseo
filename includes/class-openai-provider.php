@@ -25,9 +25,37 @@ class MFSEO_OpenAI_Provider {
     private $api_endpoint = 'https://api.openai.com/v1/chat/completions';
     
     /**
-     * Default model
+     * Default model — reads from saved settings so it respects the user's choice
      */
     private $default_model = 'gpt-4o';
+
+    /**
+     * Load default model from plugin settings
+     */
+    private function get_default_model() {
+        $settings = get_option( 'mindfulseo_settings', array() );
+        return ! empty( $settings['openai_model'] ) ? $settings['openai_model'] : $this->default_model;
+    }
+
+    /**
+     * Estimate cost in USD for an OpenAI call (rates per 1K tokens, March 2026)
+     */
+    private function estimate_cost( $model, $input_tokens, $output_tokens ) {
+        if ( strpos( $model, 'gpt-4o-mini' ) !== false ) {
+            $in_rate = 0.00015; $out_rate = 0.0006;
+        } elseif ( strpos( $model, 'gpt-4o' ) !== false ) {
+            $in_rate = 0.0025;  $out_rate = 0.010;
+        } elseif ( strpos( $model, 'gpt-4-turbo' ) !== false ) {
+            $in_rate = 0.010;   $out_rate = 0.030;
+        } elseif ( strpos( $model, 'gpt-4' ) === 0 ) {
+            $in_rate = 0.030;   $out_rate = 0.060;
+        } elseif ( strpos( $model, 'gpt-3.5' ) === 0 ) {
+            $in_rate = 0.001;   $out_rate = 0.002;
+        } else {
+            $in_rate = 0.0025;  $out_rate = 0.010;
+        }
+        return ( $input_tokens / 1000 * $in_rate ) + ( $output_tokens / 1000 * $out_rate );
+    }
     
     /**
      * Available models
@@ -54,7 +82,9 @@ class MFSEO_OpenAI_Provider {
             $response = $this->call_api(
                 'Respond with "OK" if you can read this.',
                 'gpt-3.5-turbo', // Use cheaper model for testing
-                50 // Max tokens
+                50,
+                0.7,
+                'connection_test'
             );
             
             if ($response && isset($response['choices'][0]['message']['content'])) {
@@ -80,13 +110,13 @@ class MFSEO_OpenAI_Provider {
     /**
      * Call OpenAI API
      */
-    public function call_api($prompt, $model = null, $max_tokens = 1000, $temperature = 0.7) {
+    public function call_api($prompt, $model = null, $max_tokens = 1000, $temperature = 0.7, $usage_context = '') {
         if (empty($this->api_key)) {
             throw new Exception(__('OpenAI API key is not configured.', 'mindfulseo'));
         }
         
         if (!$model) {
-            $model = $this->default_model;
+            $model = $this->get_default_model();
         }
         
         // Build request body
@@ -95,7 +125,7 @@ class MFSEO_OpenAI_Provider {
             'messages' => [
                 [
                     'role' => 'system',
-                    'content' => 'You are an expert SEO consultant and content writer specializing in Buddhist content for FPMT (Foundation for the Preservation of the Mahayana Tradition).',
+                    'content' => 'You are an expert SEO consultant and content writer. Follow any language guidelines provided in the prompt.',
                 ],
                 [
                     'role' => 'user',
@@ -144,11 +174,14 @@ class MFSEO_OpenAI_Provider {
             throw new Exception(__('Invalid response from OpenAI API.', 'mindfulseo'));
         }
         
-        // Log usage
-        if (isset($data['usage'])) {
-            do_action('mindfulseo_api_usage', 'openai', $model, $data['usage']);
+        // Log usage to the MindfulSEO cost tracker
+        if ( isset( $data['usage'] ) && class_exists( 'MFSEO_Logger' ) ) {
+            $input_tokens  = isset( $data['usage']['prompt_tokens'] )     ? (int) $data['usage']['prompt_tokens']     : 0;
+            $output_tokens = isset( $data['usage']['completion_tokens'] ) ? (int) $data['usage']['completion_tokens'] : 0;
+            $cost = $this->estimate_cost( $model, $input_tokens, $output_tokens );
+            MFSEO_Logger::get_instance()->log_api_call( 'openai', $input_tokens, $output_tokens, $cost, $model, $usage_context );
         }
-        
+
         return $data;
     }
     
@@ -159,7 +192,7 @@ class MFSEO_OpenAI_Provider {
         $prompt = $this->create_optimization_prompt($content, $keyword, $guidelines, $search_intent);
         
         try {
-            $response = $this->call_api($prompt, $this->default_model, 1500);
+            $response = $this->call_api($prompt, $this->get_default_model(), 1500, 0.7, 'optimize_content');
             return $this->parse_optimization_response($response);
             
         } catch (Exception $e) {
@@ -192,14 +225,14 @@ REQUIREMENTS:
 - Include the keyword naturally
 - 55-60 characters long
 - Compelling and click-worthy
-- Respect Buddhist terminology guidelines
+- Respect any language guidelines provided
 - No clickbait or exaggeration
 
 Respond with ONLY the title, no explanations.
 PROMPT;
         
         try {
-            $response = $this->call_api($prompt, $this->default_model, 100, 0.8);
+            $response = $this->call_api($prompt, $this->get_default_model(), 100, 0.8, 'generate_seo_title');
             $title = trim($response['choices'][0]['message']['content']);
             
             // Remove quotes if AI added them
@@ -240,13 +273,13 @@ REQUIREMENTS:
 - 150-155 characters long
 - Clear value proposition
 - Call-to-action where appropriate
-- Respect Buddhist terminology guidelines
+- Respect any language guidelines provided
 
 Respond with ONLY the meta description, no explanations.
 PROMPT;
         
         try {
-            $response = $this->call_api($prompt, $this->default_model, 100, 0.8);
+            $response = $this->call_api($prompt, $this->get_default_model(), 100, 0.8, 'generate_meta_description');
             $description = trim($response['choices'][0]['message']['content']);
             
             // Remove quotes if AI added them
@@ -273,7 +306,7 @@ PROMPT;
         $content_excerpt = $this->truncate_content($content, 3000);
         
         $prompt = <<<PROMPT
-You are an SEO expert optimizing content for FPMT (Foundation for the Preservation of the Mahayana Tradition).
+You are an SEO expert optimizing website content.
 
 LANGUAGE GUIDELINES:
 {$guidelines_text}
@@ -286,12 +319,12 @@ CONTENT TO OPTIMIZE:
 {$content_excerpt}
 
 TASK:
-Generate SEO optimizations while respecting the language guidelines and Buddhist terminology. Provide:
+Generate SEO optimizations while respecting any language guidelines provided. Provide:
 
 1. **Optimized SEO Title** (55-60 characters)
    - Include primary keyword naturally
    - Compelling and click-worthy
-   - Respect FPMT language preferences
+   - Respect any language guidelines provided
 
 2. **Meta Description** (150-155 characters)
    - Include primary keyword
@@ -388,6 +421,9 @@ PROMPT;
      * Truncate content for API
      */
     private function truncate_content($content, $max_chars = 3000) {
+        // PHP 8.x null safety: ensure content is a string
+        $content = is_string($content) ? $content : '';
+        
         // Remove HTML tags
         $content = wp_strip_all_tags($content);
         

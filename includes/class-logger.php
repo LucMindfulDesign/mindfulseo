@@ -77,28 +77,94 @@ class MFSEO_Logger {
      * @param int $prompt_tokens Prompt tokens used
      * @param int $completion_tokens Completion tokens used
      * @param float $cost Estimated cost
+     * @param string $model Model id (optional)
+     * @param string $usage_context Short label: feature that triggered the call (e.g. batch_optimizer, content_analyzer_keywords)
      * @return int|false Log ID or false
      */
-    public function log_api_call($provider, $prompt_tokens, $completion_tokens, $cost) {
+    public function log_api_call($provider, $prompt_tokens, $completion_tokens, $cost, $model = '', $usage_context = '') {
         global $wpdb;
         
         $table = $wpdb->prefix . 'mindfulseo_logs';
+
+        $message = '';
+        if ($model !== '') {
+            $message = $model;
+            if ($usage_context !== '') {
+                $message .= ' :: ' . $usage_context;
+            }
+        } elseif ($usage_context !== '') {
+            $message = $usage_context;
+        }
         
         $result = $wpdb->insert(
             $table,
             array(
-                'log_type' => 'api_call',
-                'ai_provider' => $provider,
-                'prompt_tokens' => $prompt_tokens,
+                'log_type'         => 'api_call',
+                'ai_provider'      => $provider,
+                'prompt_tokens'    => $prompt_tokens,
                 'completion_tokens' => $completion_tokens,
-                'cost' => $cost,
-                'user_id' => get_current_user_id(),
-                'created_at' => current_time('mysql'),
+                'cost'             => $cost,
+                'message'          => $message !== '' ? $message : null,
+                'user_id'          => get_current_user_id(),
+                'created_at'       => current_time('mysql'),
             ),
-            array('%s', '%s', '%d', '%d', '%f', '%d', '%s')
+            array('%s', '%s', '%d', '%d', '%f', '%s', '%d', '%s')
         );
         
         return $result ? $wpdb->insert_id : false;
+    }
+
+    /**
+     * Date filter for api_call rows: created_at is stored with current_time('mysql') (site timezone).
+     * Do not use CURDATE()/NOW() — MySQL uses server TZ and will mismatch the stored local datetimes.
+     *
+     * @param string $date_range 'today'|'week'|'month'|'all'
+     * @return string SQL fragment starting with leading space + AND … (empty for 'all')
+     */
+    private function get_api_call_date_sql_fragment($date_range) {
+        global $wpdb;
+
+        switch ($date_range) {
+            case 'today':
+                $d = current_time('Y-m-d');
+                return $wpdb->prepare(
+                    ' AND created_at >= %s AND created_at <= %s',
+                    $d . ' 00:00:00',
+                    $d . ' 23:59:59'
+                );
+            case 'week':
+                $start = date('Y-m-d H:i:s', strtotime('-7 days', current_time('timestamp')));
+                return $wpdb->prepare(' AND created_at >= %s', $start);
+            case 'month':
+                $start = date('Y-m-d H:i:s', strtotime('-30 days', current_time('timestamp')));
+                return $wpdb->prepare(' AND created_at >= %s', $start);
+            default:
+                return '';
+        }
+    }
+
+    /**
+     * Get daily API cost trend grouped by provider.
+     *
+     * @param string $date_range  'today' | 'week' | 'month' | 'all'
+     * @return array  Array of [ 'day' => 'YYYY-MM-DD', 'provider' => string, 'calls' => int, 'cost' => float ]
+     */
+    public function get_api_daily_trend($date_range = 'month') {
+        global $wpdb;
+        $table = $wpdb->prefix . 'mindfulseo_logs';
+
+        $where = "log_type = 'api_call'";
+        $where .= $this->get_api_call_date_sql_fragment($date_range);
+
+        return $wpdb->get_results(
+            "SELECT DATE(created_at) AS day, ai_provider AS provider,
+                    COUNT(*) AS calls, SUM(cost) AS cost, SUM(prompt_tokens) AS tokens
+             FROM $table
+             WHERE $where
+             GROUP BY DATE(created_at), ai_provider
+             ORDER BY day ASC",
+            ARRAY_A
+        );
     }
     
     /**
@@ -217,18 +283,7 @@ class MFSEO_Logger {
         $table = $wpdb->prefix . 'mindfulseo_logs';
         
         $where = "log_type = 'api_call'";
-        
-        switch ($date_range) {
-            case 'today':
-                $where .= " AND DATE(created_at) = CURDATE()";
-                break;
-            case 'week':
-                $where .= " AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)";
-                break;
-            case 'month':
-                $where .= " AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
-                break;
-        }
+        $where .= $this->get_api_call_date_sql_fragment($date_range);
         
         // Get overall stats
         $stats = $wpdb->get_row(
@@ -291,18 +346,7 @@ class MFSEO_Logger {
         $table = $wpdb->prefix . 'mindfulseo_logs';
         
         $where = "1=1";
-        
-        switch ($date_range) {
-            case 'today':
-                $where .= " AND DATE(created_at) = CURDATE()";
-                break;
-            case 'week':
-                $where .= " AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)";
-                break;
-            case 'month':
-                $where .= " AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
-                break;
-        }
+        $where .= $this->get_api_call_date_sql_fragment($date_range);
         
         $logs = $wpdb->get_results("SELECT * FROM $table WHERE $where ORDER BY created_at DESC");
         

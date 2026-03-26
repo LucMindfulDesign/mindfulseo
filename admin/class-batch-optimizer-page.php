@@ -26,6 +26,7 @@ class MFSEO_Batch_Optimizer_Page {
         // Get optimization statistics
         global $wpdb;
         $opts_table = $wpdb->prefix . 'mindfulseo_optimizations';
+        $opts_table_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $opts_table)) === $opts_table;
         
         // Count ALL public post types (not just 'post')
         $post_types = get_post_types(array('public' => true), 'names');
@@ -35,14 +36,22 @@ class MFSEO_Batch_Optimizer_Page {
             $total_count += isset($count_obj->publish) ? $count_obj->publish : 0;
         }
         
-        $stats = array(
-            'total_posts' => $total_count,
-            'optimized' => $wpdb->get_var("SELECT COUNT(DISTINCT post_id) FROM $opts_table WHERE status = 'approved'"),
-            'pending' => $wpdb->get_var("SELECT COUNT(DISTINCT post_id) FROM $opts_table WHERE status = 'pending'"),
-            'never_optimized' => 0,
-        );
-        
-        $stats['never_optimized'] = $stats['total_posts'] - $stats['optimized'] - $stats['pending'];
+        if ($opts_table_exists) {
+            $stats = array(
+                'total_posts' => $total_count,
+                'optimized' => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(DISTINCT post_id) FROM {$opts_table} WHERE status = %s", 'approved' ) ),
+                'pending' => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(DISTINCT post_id) FROM {$opts_table} WHERE status = %s", 'pending' ) ),
+                'never_optimized' => 0,
+            );
+            $stats['never_optimized'] = $stats['total_posts'] - $stats['optimized'] - $stats['pending'];
+        } else {
+            $stats = array(
+                'total_posts' => $total_count,
+                'optimized' => 0,
+                'pending' => 0,
+                'never_optimized' => $total_count,
+            );
+        }
         
         // Active filters
         $filters = $this->get_active_filters();
@@ -74,7 +83,6 @@ class MFSEO_Batch_Optimizer_Page {
 
         $post_keywords = array();
         $metrics_keywords = array();
-        $seo_scores = array();
 
         foreach ($posts as $post) {
             $focus_keyword = trim((string) $adapter->get_focus_keyword($post->ID));
@@ -84,7 +92,6 @@ class MFSEO_Batch_Optimizer_Page {
                 $metrics_keywords[] = $focus_keyword;
             }
 
-            $seo_scores[$post->ID] = $adapter->get_seo_score($post->ID);
         }
 
         $keyword_metrics = !empty($metrics_keywords)
@@ -94,10 +101,14 @@ class MFSEO_Batch_Optimizer_Page {
         ?>
         <?php settings_errors(); ?>
         <?php $this->render_header(); ?>
+        <?php if (!$opts_table_exists) : ?>
+        <div class="notice notice-warning inline"><p><?php esc_html_e('Database tables may need to be created. Try deactivating and reactivating the plugin.', 'mindfulseo'); ?></p></div>
+        <?php endif; ?>
         
         <div class="wrap mindfulseo-page">
             
             <div class="mindfulseo-content">
+
                 <!-- Statistics Cards -->
                 <div class="mindfulseo-stats-grid">
                     <div class="mindfulseo-stat-card">
@@ -139,6 +150,7 @@ class MFSEO_Batch_Optimizer_Page {
                             <div class="stat-label">Never Optimized</div>
                         </div>
                     </div>
+                    
                 </div>
                 
                 <!-- Filters -->
@@ -194,8 +206,8 @@ class MFSEO_Batch_Optimizer_Page {
                             <option value="200" <?php selected($filters['per_page'], 200); ?>>200</option>
                         </select>
                     </div>
-                    
-                    <button class="button" id="apply-filters"><?php _e('Apply Filters', 'mindfulseo'); ?></button>
+
+                    <button class="button button-primary" id="apply-filters"><?php _e('Apply Filters', 'mindfulseo'); ?></button>
                     <button class="button" id="reset-filters"><?php _e('Reset', 'mindfulseo'); ?></button>
                 </div>
                 
@@ -206,16 +218,16 @@ class MFSEO_Batch_Optimizer_Page {
                 ?>
                 <div class="mindfulseo-custom-prompts-section" style="margin-top: 20px;">
                     <div class="mindfulseo-section-header" style="display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: #f9f9f9; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">
-                        <h3 style="margin: 0; font-size: 14px; font-weight: 600;">
-                            <span class="dashicons dashicons-admin-generic" style="vertical-align: middle;"></span>
-                            <?php _e('Custom AI Prompts', 'mindfulseo'); ?>
+                        <h3 style="margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+                            <span class="dashicons dashicons-admin-generic" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                            <span><?php _e('Custom AI Prompts', 'mindfulseo'); ?></span>
                         </h3>
-                        <button type="button" class="button toggle-prompts-btn" style="margin: 0;">
-                            <span class="dashicons dashicons-arrow-down-alt2"></span>
-                            <?php _e('Show', 'mindfulseo'); ?>
+                        <button type="button" class="button toggle-prompts-btn mfseo-btn-icon" style="margin: 0;" aria-expanded="false" aria-controls="batch-optimizer-prompts-panel">
+                            <span class="dashicons dashicons-arrow-down-alt2 toggle-prompts-icon" aria-hidden="true"></span>
+                            <span class="toggle-prompts-label"><?php _e('Show', 'mindfulseo'); ?></span>
                         </button>
                     </div>
-                    <div class="prompts-content" style="display: none; padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 4px 4px; background: #fff;">
+                    <div id="batch-optimizer-prompts-panel" class="prompts-content" style="display: none; padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 4px 4px; background: #fff;">
                         <p class="description">
                             <?php _e('Customize the AI prompts used for content optimization. These instructions will be appended to the default optimization prompts. Leave empty to use only the default prompts.', 'mindfulseo'); ?>
                         </p>
@@ -255,23 +267,22 @@ class MFSEO_Batch_Optimizer_Page {
                 
                 <div class="mindfulseo-table-actions">
                     <div class="mindfulseo-column-controls">
-                        <button type="button" class="button column-toggle-button">
+                        <button type="button" class="button column-toggle-button mfseo-btn-icon">
                             <span class="dashicons dashicons-visibility"></span>
-                            <?php _e('Columns', 'mindfulseo'); ?>
+                            <span><?php _e('Columns', 'mindfulseo'); ?></span>
                         </button>
                         <div class="column-toggle-panel">
                             <p class="column-toggle-heading"><?php _e('Show/Hide Columns', 'mindfulseo'); ?></p>
                             <div class="column-toggle-options">
                                 <label><input type="checkbox" data-column="current_keyword" checked> <?php _e('Target Keyword', 'mindfulseo'); ?></label>
-                                <label><input type="checkbox" data-column="search_volume" checked> <?php _e('Search Volume', 'mindfulseo'); ?></label>
-                                <label><input type="checkbox" data-column="difficulty" checked> <?php _e('Difficulty', 'mindfulseo'); ?></label>
-                                <label><input type="checkbox" data-column="current_rank" checked> <?php _e('Current Rank', 'mindfulseo'); ?></label>
                                 <label><input type="checkbox" data-column="seo_title" checked> <?php _e('SEO Title', 'mindfulseo'); ?></label>
                                 <label><input type="checkbox" data-column="meta_description" checked> <?php _e('Meta Description', 'mindfulseo'); ?></label>
                                 <label><input type="checkbox" data-column="slug" checked> <?php _e('Slug', 'mindfulseo'); ?></label>
                                 <label><input type="checkbox" data-column="type" checked> <?php _e('Type', 'mindfulseo'); ?></label>
                                 <label><input type="checkbox" data-column="status" checked> <?php _e('Status', 'mindfulseo'); ?></label>
-                                <label><input type="checkbox" data-column="seo_score" checked> <?php _e('SEO Score', 'mindfulseo'); ?></label>
+                                <label><input type="checkbox" data-column="search_volume" checked> <?php _e('Vol. (Search Volume)', 'mindfulseo'); ?></label>
+                                <label><input type="checkbox" data-column="difficulty" checked> <?php _e('KD (Difficulty)', 'mindfulseo'); ?></label>
+                                <label><input type="checkbox" data-column="current_rank" checked> <?php _e('Rank', 'mindfulseo'); ?></label>
                                 <label><input type="checkbox" data-column="optimization" checked> <?php _e('Optimization', 'mindfulseo'); ?></label>
                                 <label><input type="checkbox" data-column="actions" checked> <?php _e('Actions', 'mindfulseo'); ?></label>
                             </div>
@@ -281,28 +292,64 @@ class MFSEO_Batch_Optimizer_Page {
                         <span class="selected-count">
                             <strong>0</strong> <?php _e('posts selected', 'mindfulseo'); ?>
                         </span>
-                        <button class="button button-primary button-large" id="batch-optimize-btn" disabled>
+                        <button class="button button-primary button-large mfseo-btn-icon" id="batch-optimize-btn" disabled>
                             <span class="dashicons dashicons-admin-generic"></span>
-                            <?php _e('Optimize Selected Posts', 'mindfulseo'); ?>
+                            <span><?php _e('Optimize Selected Posts', 'mindfulseo'); ?></span>
                         </button>
-                        <button type="button" class="button button-large" id="refresh-page-btn" style="margin-left: 10px;">
-                            <span class="dashicons dashicons-update" style="vertical-align: middle;"></span>
-                            <?php _e('Refresh Metrics', 'mindfulseo'); ?>
+                        <button type="button" class="button button-large mfseo-btn-icon" id="refresh-page-btn" style="margin-left: 10px;">
+                            <span class="dashicons dashicons-update"></span>
+                            <span><?php _e('Refresh Metrics', 'mindfulseo'); ?></span>
                         </button>
                         <?php
                         // Check if DataForSEO is configured
                         $settings = get_option('mindfulseo_settings', array());
                         $dataforseo_configured = !empty($settings['dataforseo_login']) && !empty($settings['dataforseo_password']);
                         ?>
-                        <button type="button" class="button button-primary button-large" id="mindfulseo-analyze-rankings-batch-btn" 
+                        <button type="button" class="button button-primary button-large mfseo-btn-icon" id="mindfulseo-analyze-rankings-batch-btn" 
                                 style="margin-left: 10px; background: #d4af37; border-color: #b8941f;" 
                                 <?php if (!$dataforseo_configured): ?>disabled title="<?php esc_attr_e('Configure DataForSEO API in Settings first', 'mindfulseo'); ?>"<?php endif; ?>>
-                            <span class="dashicons dashicons-chart-line" style="vertical-align: middle;"></span>
-                            <?php _e('Analyze Site Rankings', 'mindfulseo'); ?>
+                            <span class="dashicons dashicons-chart-line"></span>
+                            <span><?php _e('Analyze Site Rankings', 'mindfulseo'); ?></span>
                         </button>
                     </div>
                 </div>
                 
+                <!-- Progress Bar (shown during optimization) -->
+                <div id="mfseo-inline-progress" class="mfseo-progress-bar-wrap" style="display:none;">
+                    <div class="mfseo-progress-header">
+                        <div class="mfseo-progress-header__left">
+                            <div id="mfseo-progress-spinner" class="mfseo-progress-spinner"></div>
+                            <div>
+                                <strong id="mfseo-progress-title"><?php _e('Optimizing with AI...', 'mindfulseo'); ?></strong>
+                                <span id="mfseo-progress-detail" class="mfseo-progress-detail"></span>
+                            </div>
+                        </div>
+                        <div class="mfseo-progress-header__right">
+                            <button type="button" id="mfseo-toggle-details" class="mfseo-progress-toggle-btn">
+                                <span class="dashicons dashicons-arrow-down-alt2"></span>
+                                <span><?php _e('See Details', 'mindfulseo'); ?></span>
+                            </button>
+                            <a href="<?php echo esc_url(admin_url('admin.php?page=mindfulseo-batch-optimize&filter_status=optimized')); ?>" id="mfseo-view-optimized" class="mfseo-progress-view-btn" style="display:none;">
+                                <?php _e('View Optimized Posts', 'mindfulseo'); ?>
+                            </a>
+                            <button type="button" id="mfseo-close-progress" class="mfseo-progress-close-btn" title="<?php esc_attr_e('Close', 'mindfulseo'); ?>">&times;</button>
+                        </div>
+                    </div>
+                    <div class="mfseo-progress-track">
+                        <div id="mfseo-progress-bar" class="mfseo-progress-fill"></div>
+                    </div>
+                    <div id="mfseo-progress-stats" class="mfseo-progress-stats">
+                        <span id="mfseo-progress-count">0</span> <?php _e('of', 'mindfulseo'); ?> <span id="mfseo-progress-total">0</span> <?php _e('posts processed', 'mindfulseo'); ?>
+                        &nbsp;&bull;&nbsp;
+                        <span id="mfseo-progress-success" class="mfseo-progress-success">0 <?php _e('successful', 'mindfulseo'); ?></span>
+                        &nbsp;&bull;&nbsp;
+                        <span id="mfseo-progress-errors" class="mfseo-progress-errors">0 <?php _e('errors', 'mindfulseo'); ?></span>
+                    </div>
+                    <div id="mfseo-progress-details" class="mfseo-progress-details">
+                        <div id="mfseo-progress-log" class="mfseo-progress-log"></div>
+                    </div>
+                </div>
+
                 <!-- Posts Table -->
                 <div class="mindfulseo-posts-table-wrap">
                     <div class="mindfulseo-table-scroll">
@@ -312,15 +359,14 @@ class MFSEO_Batch_Optimizer_Page {
                                 <th width="40" class="column-select" data-sortable="false"><input type="checkbox" id="select-all-header"></th>
                                 <th class="column-post-title sortable-column" data-column="post_title" data-sort-type="text"><?php _e('Post Title', 'mindfulseo'); ?></th>
                                 <th class="column-current-keyword sortable-column" data-column="current_keyword" data-sort-type="text"><?php _e('Target Keyword', 'mindfulseo'); ?></th>
-                                <th class="column-search-volume sortable-column" data-column="search_volume" data-sort-type="numeric"><?php _e('Search Volume', 'mindfulseo'); ?></th>
-                                <th class="column-difficulty sortable-column" data-column="difficulty" data-sort-type="numeric"><?php _e('Difficulty', 'mindfulseo'); ?></th>
-                                <th class="column-current-rank sortable-column" data-column="current_rank" data-sort-type="numeric"><?php _e('Current Rank', 'mindfulseo'); ?></th>
                                 <th class="column-seo-title sortable-column" data-column="seo_title" data-sort-type="text"><?php _e('SEO Title', 'mindfulseo'); ?></th>
                                 <th class="column-meta-description sortable-column" data-column="meta_description" data-sort-type="text"><?php _e('Meta Description', 'mindfulseo'); ?></th>
                                 <th class="column-slug sortable-column" data-column="slug" data-sort-type="text"><?php _e('Slug', 'mindfulseo'); ?></th>
                                 <th class="column-type sortable-column" data-column="type" data-sort-type="text"><?php _e('Type', 'mindfulseo'); ?></th>
                                 <th class="column-status sortable-column" data-column="status" data-sort-type="text"><?php _e('Status', 'mindfulseo'); ?></th>
-                                <th class="column-seo-score sortable-column" data-column="seo_score" data-sort-type="numeric"><?php _e('SEO Score', 'mindfulseo'); ?></th>
+                                <th class="column-search-volume sortable-column" data-column="search_volume" data-sort-type="numeric" title="<?php esc_attr_e('Search Volume', 'mindfulseo'); ?>"><?php esc_html_e( 'Vol.', 'mindfulseo' ); ?></th>
+                                <th class="column-difficulty sortable-column" data-column="difficulty" data-sort-type="numeric" title="<?php esc_attr_e('Keyword Difficulty', 'mindfulseo'); ?>"><?php esc_html_e( 'KD', 'mindfulseo' ); ?></th>
+                                <th class="column-current-rank sortable-column" data-column="current_rank" data-sort-type="numeric" title="<?php esc_attr_e('Current Rank — real Google rank from DataForSEO; run Analyze Site Rankings to populate', 'mindfulseo'); ?>"><?php esc_html_e( 'Rank', 'mindfulseo' ); ?></th>
                                 <th class="column-optimization sortable-column" data-column="optimization" data-sort-type="text"><?php _e('Optimization', 'mindfulseo'); ?></th>
                                 <th class="column-actions" data-column="actions" data-sortable="false"><?php _e('Actions', 'mindfulseo'); ?></th>
                             </tr>
@@ -335,7 +381,6 @@ class MFSEO_Batch_Optimizer_Page {
                                 $seo_title = $adapter->get_seo_title($post->ID) ?: '—';
                                 $meta_desc = $adapter->get_meta_description($post->ID) ?: '—';
                                 $slug = $post->post_name ?: '—';
-                                $seo_score_value = isset($seo_scores[$post->ID]) ? $seo_scores[$post->ID] : null;
 
                                 $search_volume_display = '—';
                                 if ($metrics && isset($metrics['search_volume']) && $metrics['search_volume'] !== null) {
@@ -381,7 +426,7 @@ class MFSEO_Batch_Optimizer_Page {
                                     data-status="<?php echo esc_attr($post->opt_status ?: 'never'); ?>"
                                     data-type="<?php echo esc_attr($post->post_type); ?>"
                                     data-modified="<?php echo esc_attr($post->post_modified); ?>">
-                                    <td>
+                                    <td class="column-select">
                                         <input type="checkbox" class="post-checkbox" value="<?php echo esc_attr($post->ID); ?>">
                                     </td>
                                     <td class="column-post-title" data-column="post_title">
@@ -396,6 +441,35 @@ class MFSEO_Batch_Optimizer_Page {
                                                contenteditable="true" 
                                                data-post-id="<?php echo esc_attr($post->ID); ?>"
                                                data-field="focus_keyword"><?php echo esc_html($current_keyword !== '—' ? $current_keyword : ''); ?></small>
+                                    </td>
+                                    <td class="column-seo-title" data-column="seo_title">
+                                        <small class="editable" 
+                                               contenteditable="true" 
+                                               data-post-id="<?php echo esc_attr($post->ID); ?>"
+                                               data-field="seo_title"><?php echo esc_html($seo_title !== '—' ? mb_substr($seo_title, 0, 60) : ''); ?></small>
+                                    </td>
+                                    <td class="column-meta-description" data-column="meta_description">
+                                        <small class="editable" 
+                                               contenteditable="true" 
+                                               data-post-id="<?php echo esc_attr($post->ID); ?>"
+                                               data-field="meta_description"><?php echo esc_html($meta_desc !== '—' ? mb_substr($meta_desc, 0, 160) : ''); ?></small>
+                                    </td>
+                                    <td class="column-slug" data-column="slug">
+                                        <small class="editable" 
+                                               contenteditable="true" 
+                                               data-post-id="<?php echo esc_attr($post->ID); ?>"
+                                               data-field="slug"><?php echo esc_html($slug !== '—' ? $slug : ''); ?></small>
+                                    </td>
+                                    <td class="column-type" data-column="type" data-sort-value="<?php $post_type_obj = get_post_type_object($post->post_type); $type_label = ($post_type_obj && isset($post_type_obj->labels->singular_name)) ? $post_type_obj->labels->singular_name : 'Post'; echo esc_attr($type_label); ?>"><?php echo esc_html($type_label); ?></td>
+                                    <td class="column-status" data-column="status" data-sort-value="<?php echo esc_attr($post->post_status); ?>">
+                                        <?php
+                                        $status_labels = array(
+                                            'publish' => '<span class="status-badge status-publish">Published</span>',
+                                            'draft' => '<span class="status-badge status-draft">Draft</span>',
+                                            'pending' => '<span class="status-badge status-pending">Pending</span>',
+                                        );
+                                        echo $status_labels[$post->post_status] ?? '<span class="status-badge">' . esc_html($post->post_status) . '</span>';
+                                        ?>
                                     </td>
                                     <td class="metric-cell column-search-volume" data-column="search_volume" data-sort-value="<?php echo esc_attr($metrics && isset($metrics['search_volume']) ? intval($metrics['search_volume']) : 0); ?>">
                                         <?php echo esc_html($search_volume_display); ?>
@@ -417,35 +491,6 @@ class MFSEO_Batch_Optimizer_Page {
                                         <?php else: ?>
                                             <?php echo esc_html($current_rank_display); ?>
                                         <?php endif; ?>
-                                    </td>
-                                    <td class="column-seo-title" data-column="seo_title">
-                                        <small class="editable" 
-                                               contenteditable="true" 
-                                               data-post-id="<?php echo esc_attr($post->ID); ?>"
-                                               data-field="seo_title"><?php echo esc_html($seo_title !== '—' ? mb_substr($seo_title, 0, 60) : ''); ?></small>
-                                    </td>
-                                    <td class="column-meta-description" data-column="meta_description">
-                                        <small class="editable" 
-                                               contenteditable="true" 
-                                               data-post-id="<?php echo esc_attr($post->ID); ?>"
-                                               data-field="meta_description"><?php echo esc_html($meta_desc !== '—' ? mb_substr($meta_desc, 0, 160) : ''); ?></small>
-                                    </td>
-                                    <td class="column-slug" data-column="slug">
-                                        <small class="editable" 
-                                               contenteditable="true" 
-                                               data-post-id="<?php echo esc_attr($post->ID); ?>"
-                                               data-field="slug"><?php echo esc_html($slug !== '—' ? $slug : ''); ?></small>
-                                    </td>
-                                    <td class="column-type" data-column="type" data-sort-value="<?php echo esc_attr(get_post_type_object($post->post_type)->labels->singular_name); ?>"><?php echo esc_html(get_post_type_object($post->post_type)->labels->singular_name); ?></td>
-                                    <td class="column-status" data-column="status" data-sort-value="<?php echo esc_attr($post->post_status); ?>">
-                                        <?php
-                                        $status_labels = array(
-                                            'publish' => '<span class="status-badge status-publish">Published</span>',
-                                            'draft' => '<span class="status-badge status-draft">Draft</span>',
-                                            'pending' => '<span class="status-badge status-pending">Pending</span>',
-                                        );
-                                        echo $status_labels[$post->post_status] ?? '<span class="status-badge">' . esc_html($post->post_status) . '</span>';
-                                        ?>
                                     </td>
                                     <?php
                                     $optimization_sort_value = 'Never';
@@ -469,9 +514,6 @@ class MFSEO_Batch_Optimizer_Page {
                                         }
                                         ?>
                                     </td>
-                                    <td class="metric-cell column-seo-score" data-column="seo_score" data-sort-value="<?php echo esc_attr(!is_null($seo_score_value) && $seo_score_value !== '' ? intval($seo_score_value) : 0); ?>">
-                                        <?php echo !is_null($seo_score_value) && $seo_score_value !== '' ? esc_html(intval($seo_score_value)) : '—'; ?>
-                                    </td>
                                     <td class="column-actions" data-column="actions">
                                         <button class="button button-small optimize-single" data-post-id="<?php echo esc_attr($post->ID); ?>">
                                             <?php echo $post->opt_status === 'approved' ? __('Re-Optimize', 'mindfulseo') : __('Optimize', 'mindfulseo'); ?>
@@ -482,7 +524,10 @@ class MFSEO_Batch_Optimizer_Page {
                             </tbody>
                         </table>
                     </div>
-                    
+                    <p class="mindfulseo-batch-table-scroll-hint">
+                        <?php esc_html_e( 'Scroll inside the table area above to see all posts loaded on this page.', 'mindfulseo' ); ?>
+                    </p>
+
                     <!-- Pagination -->
                     <?php if ($total_pages > 1): ?>
                     <div class="mindfulseo-pagination" style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px; padding: 15px; border-top: 1px solid #dcdcde;">
@@ -548,48 +593,6 @@ class MFSEO_Batch_Optimizer_Page {
                     <?php endif; ?>
                 </div>
                 
-                <!-- Progress Modal -->
-                <div class="mindfulseo-modal" id="batch-progress-modal" style="display: none;">
-                    <div class="mindfulseo-modal-content modal-large">
-                        <div class="mindfulseo-modal-header">
-                            <h2><?php _e('Batch Optimization Progress', 'mindfulseo'); ?></h2>
-                        </div>
-                        <div class="mindfulseo-modal-body">
-                            <div class="progress-summary">
-                                <div class="progress-stat">
-                                    <strong id="progress-current">0</strong> / <span id="progress-total">0</span>
-                                    <?php _e('posts optimized', 'mindfulseo'); ?>
-                                </div>
-                                <div class="progress-stat">
-                                    <strong id="progress-success">0</strong> <?php _e('successful', 'mindfulseo'); ?>
-                                </div>
-                                <div class="progress-stat progress-errors">
-                                    <strong id="progress-errors">0</strong> <?php _e('errors', 'mindfulseo'); ?>
-                                </div>
-                            </div>
-                            
-                            <div class="progress-bar-container">
-                                <div class="progress-bar" id="batch-progress-bar">
-                                    <div class="progress-fill" id="batch-progress-fill" style="width: 0%"></div>
-                                </div>
-                                <div class="progress-percentage" id="batch-progress-percent">0%</div>
-                            </div>
-                            
-                            <div class="progress-current-post">
-                                <p><?php _e('Currently optimizing:', 'mindfulseo'); ?> <strong id="current-post-title">—</strong></p>
-                            </div>
-                            
-                            <div class="progress-log" id="batch-progress-log">
-                                <!-- Progress messages appear here -->
-                            </div>
-                        </div>
-                        <div class="mindfulseo-modal-footer">
-                            <button class="button" id="close-progress-modal" disabled>
-                                <?php _e('Close', 'mindfulseo'); ?>
-                            </button>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
         
@@ -669,6 +672,9 @@ class MFSEO_Batch_Optimizer_Page {
     private function get_posts_with_status($per_page = 50, $offset = 0, $filters = array()) {
         global $wpdb;
         $opts_table = $wpdb->prefix . 'mindfulseo_optimizations';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $opts_table)) !== $opts_table) {
+            return array();
+        }
         
         // Get all public post types (including custom post types like Events)
         $post_types = get_post_types(array('public' => true), 'names');
@@ -704,11 +710,14 @@ class MFSEO_Batch_Optimizer_Page {
             }
         }
 
-        // Date filter
+        // Date filter - filter by optimization date OR post modification date
+        // This ensures newly optimized posts show up even if the post itself is old
         if (!empty($filters['date']) && 'all' !== $filters['date']) {
             $date_threshold = $this->get_date_threshold_gmt($filters['date']);
             if ($date_threshold) {
-                $where[] = 'p.post_modified_gmt >= %s';
+                // Show posts that were either optimized OR modified in the date range
+                $where[] = '(o.optimization_date >= %s OR p.post_modified_gmt >= %s)';
+                $params[] = $date_threshold;
                 $params[] = $date_threshold;
             }
         }
@@ -763,6 +772,9 @@ class MFSEO_Batch_Optimizer_Page {
     private function get_total_posts_count($filters = array()) {
         global $wpdb;
         $opts_table = $wpdb->prefix . 'mindfulseo_optimizations';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $opts_table)) !== $opts_table) {
+            return 0;
+        }
         
         // Get all public post types
         $post_types = get_post_types(array('public' => true), 'names');
@@ -838,7 +850,7 @@ class MFSEO_Batch_Optimizer_Page {
         $filters = array(
             'post_type' => isset($_GET['filter_post_type']) ? sanitize_key(wp_unslash($_GET['filter_post_type'])) : 'all',
             'status'    => isset($_GET['filter_status']) ? sanitize_key(wp_unslash($_GET['filter_status'])) : 'all',
-            'date'      => isset($_GET['filter_date']) ? sanitize_key(wp_unslash($_GET['filter_date'])) : 'all',
+            'date'      => isset($_GET['filter_date']) ? sanitize_key(wp_unslash($_GET['filter_date'])) : 'all', // Default to 'all' so new optimizations show
             'per_page'  => isset($_GET['per_page']) ? intval($_GET['per_page']) : 50,
         );
 

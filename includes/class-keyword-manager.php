@@ -52,6 +52,16 @@ class MFSEO_Keyword_Manager {
             $this->csv_importer = new MFSEO_CSV_Importer();
         }
     }
+
+    /**
+     * Check if the keywords table exists
+     *
+     * @return bool
+     */
+    private function table_exists() {
+        global $wpdb;
+        return $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $this->table_name)) === $this->table_name;
+    }
     
     /**
      * Import CSV file
@@ -105,6 +115,10 @@ class MFSEO_Keyword_Manager {
      */
     public function add_keyword($data) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return new WP_Error('table_missing', __('Keyword table is not available. Try deactivating and reactivating the plugin.', 'mindfulseo'));
+        }
         
         // Validate required fields
         if (empty($data['primary_keyword']) || empty($data['longtail_keyword'])) {
@@ -153,6 +167,10 @@ class MFSEO_Keyword_Manager {
      */
     public function get_keywords($args = array()) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return array();
+        }
         
         $defaults = array(
             'primary_keyword' => '',
@@ -217,6 +235,10 @@ class MFSEO_Keyword_Manager {
      */
     public function get_keyword($id) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return null;
+        }
         
         return $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM {$this->table_name} WHERE id = %d",
@@ -232,6 +254,10 @@ class MFSEO_Keyword_Manager {
      */
     public function get_keywords_by_primary($primary_keyword) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return array();
+        }
         
         return $wpdb->get_results($wpdb->prepare(
             "SELECT * FROM {$this->table_name} WHERE primary_keyword = %s ORDER BY priority ASC",
@@ -248,11 +274,10 @@ class MFSEO_Keyword_Manager {
     public function get_metrics_for_keywords($keywords = array()) {
         global $wpdb;
 
-        if (empty($keywords)) {
+        if (!$this->table_exists() || empty($keywords)) {
             return array();
         }
 
-        // Sanitize and ensure uniqueness
         $prepared_keywords = array();
         foreach ($keywords as $keyword) {
             $keyword = sanitize_text_field($keyword);
@@ -269,11 +294,18 @@ class MFSEO_Keyword_Manager {
 
         $placeholders = implode(', ', array_fill(0, count($prepared_keywords), '%s'));
 
+        // Search both primary_keyword and longtail_keyword so batch optimizer
+        // focus keywords (which may be longtails) find their metrics.
+        $all_params = array_merge($prepared_keywords, $prepared_keywords);
         $query = $wpdb->prepare(
-            "SELECT primary_keyword, search_volume, keyword_difficulty, cpc, seo_data_updated
+            "SELECT primary_keyword, longtail_keyword, search_volume, keyword_difficulty, cpc,
+                    current_rank, ranking_url, seo_data_updated, dataforseo_status
              FROM {$this->table_name}
-             WHERE primary_keyword IN ($placeholders)",
-            $prepared_keywords
+             WHERE primary_keyword IN ($placeholders)
+                OR longtail_keyword IN ($placeholders)
+             ORDER BY FIELD(dataforseo_status, 'success', 'no_data', 'error', 'pending') ASC,
+                      seo_data_updated DESC",
+            $all_params
         );
 
         $results = $wpdb->get_results($query);
@@ -284,17 +316,26 @@ class MFSEO_Keyword_Manager {
 
         $metrics = array();
         foreach ($results as $row) {
-            $key = strtolower(trim($row->primary_keyword));
-            if ($key === '') {
-                continue;
-            }
-
-            $metrics[$key] = array(
+            $row_data = array(
                 'search_volume'      => $row->search_volume !== null ? intval($row->search_volume) : null,
                 'keyword_difficulty' => $row->keyword_difficulty !== null ? intval($row->keyword_difficulty) : null,
                 'cpc'                => $row->cpc !== null ? floatval($row->cpc) : null,
+                'current_rank'       => isset($row->current_rank) && $row->current_rank !== null ? intval($row->current_rank) : null,
+                'ranking_url'        => isset($row->ranking_url) ? $row->ranking_url : null,
                 'seo_data_updated'   => isset($row->seo_data_updated) ? $row->seo_data_updated : null,
             );
+
+            // Index by primary_keyword
+            $pk = strtolower(trim($row->primary_keyword));
+            if ($pk !== '' && !isset($metrics[$pk])) {
+                $metrics[$pk] = $row_data;
+            }
+
+            // Also index by longtail_keyword so the batch optimizer can find it
+            $lt = isset($row->longtail_keyword) ? strtolower(trim($row->longtail_keyword)) : '';
+            if ($lt !== '' && !isset($metrics[$lt])) {
+                $metrics[$lt] = $row_data;
+            }
         }
 
         return $metrics;
@@ -325,6 +366,10 @@ class MFSEO_Keyword_Manager {
      */
     public function get_longtail_keywords($primary_keyword) {
         global $wpdb;
+
+        if (!$this->table_exists()) {
+            return array();
+        }
         
         $results = $wpdb->get_results($wpdb->prepare(
             "SELECT longtail_keyword, search_intent, priority FROM {$this->table_name} 
@@ -345,30 +390,45 @@ class MFSEO_Keyword_Manager {
     /**
      * Find matching keywords for post content
      *
-     * Uses NLP-like analysis to find relevant keywords from the content
+     * Uses density-aware scoring: a keyword mentioned 3 times in a 5000-word
+     * post is NOT the same as 3 mentions in a 300-word post. Keywords that
+     * don't appear in the title need much higher content density to qualify.
      *
      * @param string $post_content Post content
      * @param int $limit Maximum number of keywords to return
+     * @param string $post_title Post title
      * @return array Matching keywords with relevance scores
      */
+    private $_cached_keywords = null;
+    
     public function find_matching_keywords($post_content, $limit = 10, $post_title = '') {
         global $wpdb;
         
-        // Clean and prepare content
         $content = strtolower(strip_tags($post_content));
         $content = preg_replace('/[^a-z0-9\s-]/', ' ', $content);
         $title = strtolower(strip_tags($post_title));
         $title = preg_replace('/[^a-z0-9\s-]/', ' ', $title);
         
-        // Get first 500 characters (intro is most important)
+        $word_count = str_word_count($content);
+        if ($word_count < 1) {
+            $word_count = 1;
+        }
+        
         $intro = substr($content, 0, 500);
         
-        // Get all keywords from database
-        $all_keywords = $wpdb->get_results(
-            "SELECT * FROM {$this->table_name}"
-        );
+        if ($this->_cached_keywords === null) {
+            $this->_cached_keywords = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT * FROM {$this->table_name} ORDER BY priority DESC, search_volume DESC LIMIT %d",
+                    2000
+                )
+            );
+            if (!is_array($this->_cached_keywords)) {
+                $this->_cached_keywords = array();
+            }
+        }
+        $all_keywords = $this->_cached_keywords;
         
-        // Score each keyword
         $scored_keywords = array();
         
         foreach ($all_keywords as $keyword_row) {
@@ -376,35 +436,55 @@ class MFSEO_Keyword_Manager {
             $primary = strtolower($keyword_row->primary_keyword);
             $longtail = strtolower($keyword_row->longtail_keyword);
             
-            // Skip empty keywords
             if (empty(trim($primary))) {
                 continue;
             }
             
-            // 🎯 TITLE MATCH = HIGHEST PRIORITY (Post is ABOUT this keyword)
-            // Exact match in title = +50 points
-            if (stripos($title, $primary) !== false) {
+            $title_match = stripos($title, $primary) !== false;
+            $longtail_title_match = !empty($longtail) && stripos($title, $longtail) !== false;
+            
+            // TITLE MATCH = HIGHEST PRIORITY (post is explicitly ABOUT this)
+            if ($title_match) {
                 $score += 50;
             }
-            if (!empty($longtail) && stripos($title, $longtail) !== false) {
+            if ($longtail_title_match) {
                 $score += 60;
             }
             
-            // 🔍 INTRO MATCH = HIGH PRIORITY (Keyword appears early)
-            // Count occurrences in first paragraph
+            // INTRO MATCH
             $intro_count_primary = substr_count($intro, $primary);
             $intro_count_longtail = !empty($longtail) ? substr_count($intro, $longtail) : 0;
             $score += $intro_count_primary * 20;
             $score += $intro_count_longtail * 25;
             
-            // 📄 CONTENT FREQUENCY = MEDIUM PRIORITY
-            // Count how many times keyword appears in full content
+            // CONTENT FREQUENCY with density awareness
             $content_count_primary = substr_count($content, $primary);
             $content_count_longtail = !empty($longtail) ? substr_count($content, $longtail) : 0;
-            $score += $content_count_primary * 5;
-            $score += $content_count_longtail * 7;
             
-            // ⭐ PRIORITY BOOST
+            if (!$title_match && !$longtail_title_match) {
+                // Keyword is NOT in the title - apply density penalty.
+                // A keyword mentioned only a few times in a long post is
+                // tangential, not the main topic.
+                $density = ($content_count_primary * 1000) / $word_count;
+                
+                if ($density < 2) {
+                    // Very sparse mention (< 2 per 1000 words) - heavily penalize
+                    $score += $content_count_primary * 1;
+                } elseif ($density < 5) {
+                    // Low density - mild score
+                    $score += $content_count_primary * 3;
+                } else {
+                    // High density - this topic is genuinely prominent
+                    $score += $content_count_primary * 5;
+                }
+                $score += $content_count_longtail * 2;
+            } else {
+                // Title match - full content scoring
+                $score += $content_count_primary * 5;
+                $score += $content_count_longtail * 7;
+            }
+            
+            // PRIORITY BOOST
             if ($keyword_row->priority === 'HIGH') {
                 $score *= 1.3;
             } elseif ($keyword_row->priority === 'MEDIUM') {
@@ -417,33 +497,32 @@ class MFSEO_Keyword_Manager {
                     'score' => $score,
                     'debug' => array(
                         'primary' => $primary,
-                        'title_match' => stripos($title, $primary) !== false,
+                        'title_match' => $title_match,
                         'intro_count' => $intro_count_primary,
                         'content_count' => $content_count_primary,
+                        'density' => round(($content_count_primary * 1000) / $word_count, 1),
                     )
                 );
             }
         }
         
-        // Sort by score (descending)
         usort($scored_keywords, function($a, $b) {
             return $b['score'] - $a['score'];
         });
         
-        // Log top 3 matches for debugging
-        error_log('MindfulSEO: Top keyword matches:');
+        error_log('MindfulSEO: Top keyword matches (word_count=' . $word_count . '):');
         foreach (array_slice($scored_keywords, 0, 3) as $match) {
             error_log(sprintf(
-                '  - "%s" (score: %.1f, title_match: %s, intro: %d, content: %d)',
+                '  - "%s" (score: %.1f, title: %s, intro: %d, content: %d, density: %.1f/1000w)',
                 $match['debug']['primary'],
                 $match['score'],
                 $match['debug']['title_match'] ? 'YES' : 'no',
                 $match['debug']['intro_count'],
-                $match['debug']['content_count']
+                $match['debug']['content_count'],
+                $match['debug']['density']
             ));
         }
         
-        // Return top matches
         return array_slice($scored_keywords, 0, $limit);
     }
     
@@ -587,7 +666,7 @@ class MFSEO_Keyword_Manager {
         $stats = array();
         
         // Total keywords
-        $stats['total'] = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name}");
+        $stats['total'] = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->table_name}" );
         
         // By priority
         $stats['by_priority'] = $wpdb->get_results(

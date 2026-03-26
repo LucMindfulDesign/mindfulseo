@@ -30,19 +30,19 @@ class MFSEO_CSV_Importer {
     private $max_file_size = 5242880;
     
     /**
-     * Required CSV columns
+     * Required CSV columns (only PRIMARY KEYWORD is truly mandatory)
      */
     private $required_columns = array(
         'PRIMARY KEYWORD',
-        'LONGTAIL KEYWORD',
-        'SEARCH INTENT',
-        'PRIORITY'
     );
     
     /**
      * Optional CSV columns
      */
     private $optional_columns = array(
+        'LONGTAIL KEYWORD',
+        'SEARCH INTENT',
+        'PRIORITY',
         'CURRENT SESSIONS',
         'NOTES'
     );
@@ -162,11 +162,11 @@ class MFSEO_CSV_Importer {
         $mime = finfo_file($finfo, $file['tmp_name']);
         finfo_close($finfo);
         
-        $allowed_mimes = array('text/csv', 'text/plain', 'application/csv');
+        $allowed_mimes = array('text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel', 'application/octet-stream');
         if (!in_array($mime, $allowed_mimes)) {
             return new WP_Error(
                 'invalid_mime_type',
-                __('Invalid file format. Please upload a valid CSV file.', 'mindfulseo')
+                sprintf(__('Invalid file format (%s). Please upload a valid CSV file.', 'mindfulseo'), $mime)
             );
         }
         
@@ -221,6 +221,9 @@ class MFSEO_CSV_Importer {
             );
         }
         
+        // Normalize headers to canonical form
+        $normalized_header = array_map(array($this, 'normalize_header'), $header);
+        
         // Validate header
         $validation = $this->validate_csv_structure($header);
         if (is_wp_error($validation)) {
@@ -240,9 +243,9 @@ class MFSEO_CSV_Importer {
                 continue;
             }
             
-            // Map row to associative array
+            // Map row to associative array using normalized headers
             $row_data = array();
-            foreach ($header as $index => $column) {
+            foreach ($normalized_header as $index => $column) {
                 $row_data[$column] = isset($row[$index]) ? trim($row[$index]) : '';
             }
             
@@ -271,20 +274,35 @@ class MFSEO_CSV_Importer {
     }
     
     /**
+     * Normalize a CSV header name to the canonical form.
+     * Handles variations like "Primary Keyword", "primary_keyword", "primary keyword".
+     */
+    private function normalize_header($header) {
+        $header = strtoupper(trim($header));
+        $header = str_replace(array('_', '-'), ' ', $header);
+        $header = preg_replace('/\s+/', ' ', $header);
+        // Strip BOM from the first column
+        $header = preg_replace('/^\xEF\xBB\xBF/', '', $header);
+        return $header;
+    }
+    
+    /**
      * Validate CSV structure
      *
      * @param array $header Header row from CSV
      * @return true|WP_Error
      */
     public function validate_csv_structure($header) {
-        // Check for required columns
+        $normalized = array_map(array($this, 'normalize_header'), $header);
+        
         foreach ($this->required_columns as $column) {
-            if (!in_array($column, $header)) {
+            if (!in_array($column, $normalized)) {
                 return new WP_Error(
                     'missing_column',
                     sprintf(
-                        __('Missing required column: %s', 'mindfulseo'),
-                        $column
+                        __('Missing required column: %s. Found columns: %s', 'mindfulseo'),
+                        $column,
+                        implode(', ', $header)
                     )
                 );
             }
@@ -300,45 +318,39 @@ class MFSEO_CSV_Importer {
      * @param int $row_number Row number (for error reporting)
      * @return true|WP_Error
      */
-    private function validate_row($row, $row_number) {
-        // Check required fields
-        foreach ($this->required_columns as $column) {
-            if (empty($row[$column])) {
-                return new WP_Error(
-                    'empty_required_field',
-                    sprintf(
-                        __('Row %d: Empty required field "%s"', 'mindfulseo'),
-                        $row_number,
-                        $column
-                    )
-                );
+    private function validate_row(&$row, $row_number) {
+        if (empty($row['PRIMARY KEYWORD'])) {
+            return new WP_Error(
+                'empty_required_field',
+                sprintf(__('Row %d: Empty PRIMARY KEYWORD', 'mindfulseo'), $row_number)
+            );
+        }
+        
+        $valid_intents = array('informational', 'navigational', 'transactional', 'commercial');
+        if (!empty($row['SEARCH INTENT'])) {
+            $intent_lower = strtolower(trim($row['SEARCH INTENT']));
+            if (!in_array($intent_lower, $valid_intents)) {
+                $row['SEARCH INTENT'] = 'Informational';
+            } else {
+                $row['SEARCH INTENT'] = ucfirst($intent_lower);
             }
+        } else {
+            $row['SEARCH INTENT'] = 'Informational';
         }
         
-        // Validate search intent
-        $valid_intents = array('Informational', 'Navigational', 'Transactional');
-        if (!empty($row['SEARCH INTENT']) && !in_array($row['SEARCH INTENT'], $valid_intents)) {
-            return new WP_Error(
-                'invalid_search_intent',
-                sprintf(
-                    __('Row %d: Invalid search intent. Must be: %s', 'mindfulseo'),
-                    $row_number,
-                    implode(', ', $valid_intents)
-                )
-            );
-        }
-        
-        // Validate priority
         $valid_priorities = array('HIGH', 'MEDIUM', 'LOW');
-        if (!empty($row['PRIORITY']) && !in_array(strtoupper($row['PRIORITY']), $valid_priorities)) {
-            return new WP_Error(
-                'invalid_priority',
-                sprintf(
-                    __('Row %d: Invalid priority. Must be: %s', 'mindfulseo'),
-                    $row_number,
-                    implode(', ', $valid_priorities)
-                )
-            );
+        if (!empty($row['PRIORITY'])) {
+            if (!in_array(strtoupper(trim($row['PRIORITY'])), $valid_priorities)) {
+                $row['PRIORITY'] = 'MEDIUM';
+            } else {
+                $row['PRIORITY'] = strtoupper(trim($row['PRIORITY']));
+            }
+        } else {
+            $row['PRIORITY'] = 'MEDIUM';
+        }
+        
+        if (empty($row['LONGTAIL KEYWORD'])) {
+            $row['LONGTAIL KEYWORD'] = $row['PRIMARY KEYWORD'] . ' guide';
         }
         
         return true;
@@ -361,11 +373,20 @@ class MFSEO_CSV_Importer {
         $errors = array();
         
         foreach ($data as $row) {
-            // Check if keyword already exists
+            $primary = sanitize_text_field(isset($row['PRIMARY KEYWORD']) ? $row['PRIMARY KEYWORD'] : '');
+            $longtail = sanitize_text_field(isset($row['LONGTAIL KEYWORD']) ? $row['LONGTAIL KEYWORD'] : ($primary . ' guide'));
+            $intent = sanitize_text_field(isset($row['SEARCH INTENT']) ? $row['SEARCH INTENT'] : 'Informational');
+            $priority = strtoupper(sanitize_text_field(isset($row['PRIORITY']) ? $row['PRIORITY'] : 'MEDIUM'));
+            
+            if (empty($primary)) {
+                $skipped++;
+                continue;
+            }
+            
             $existing = $wpdb->get_var($wpdb->prepare(
                 "SELECT id FROM $table_name WHERE primary_keyword = %s AND longtail_keyword = %s",
-                $row['PRIMARY KEYWORD'],
-                $row['LONGTAIL KEYWORD']
+                $primary,
+                $longtail
             ));
             
             if ($existing) {
@@ -373,14 +394,13 @@ class MFSEO_CSV_Importer {
                 continue;
             }
             
-            // Insert row
             $result = $wpdb->insert(
                 $table_name,
                 array(
-                    'primary_keyword' => sanitize_text_field($row['PRIMARY KEYWORD']),
-                    'longtail_keyword' => sanitize_text_field($row['LONGTAIL KEYWORD']),
-                    'search_intent' => sanitize_text_field($row['SEARCH INTENT']),
-                    'priority' => strtoupper(sanitize_text_field($row['PRIORITY'])),
+                    'primary_keyword' => $primary,
+                    'longtail_keyword' => $longtail,
+                    'search_intent' => $intent,
+                    'priority' => $priority,
                     'current_sessions' => isset($row['CURRENT SESSIONS']) ? intval($row['CURRENT SESSIONS']) : 0,
                     'notes' => isset($row['NOTES']) ? sanitize_textarea_field($row['NOTES']) : '',
                     'csv_source' => sanitize_text_field($source_filename),

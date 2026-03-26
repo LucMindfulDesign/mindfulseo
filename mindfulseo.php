@@ -3,7 +3,7 @@
  * Plugin Name: MindfulSEO
  * Plugin URI: https://mindfuldesign.me
  * Description: AI-powered SEO optimization and blog content generation with brand-aware guidelines. Works with RankMath and Yoast SEO.
- * Version: 1.0.0
+ * Version: 2.2.2
  * Author: Mindful Design
  * Author URI: https://mindfuldesign.me
  * License: GPL v2 or later
@@ -19,12 +19,22 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Define plugin constants
-define('MINDFULSEO_VERSION', '1.0.0');
-define('MINDFULSEO_PLUGIN_DIR', plugin_dir_path(__FILE__));
-define('MINDFULSEO_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('MINDFULSEO_PLUGIN_FILE', __FILE__);
-define('MINDFULSEO_PLUGIN_BASENAME', plugin_basename(__FILE__));
+// Define plugin constants with PHP 8.x null safety
+define('MINDFULSEO_VERSION', '2.2.4');
+
+// Ensure path functions return valid strings (PHP 8.x compatibility)
+$_mfseo_plugin_dir = plugin_dir_path(__FILE__);
+$_mfseo_plugin_url = plugin_dir_url(__FILE__);
+$_mfseo_plugin_file = __FILE__;
+$_mfseo_plugin_basename = plugin_basename(__FILE__);
+
+define('MINDFULSEO_PLUGIN_DIR', is_string($_mfseo_plugin_dir) && !empty($_mfseo_plugin_dir) ? $_mfseo_plugin_dir : dirname(__FILE__) . '/');
+define('MINDFULSEO_PLUGIN_URL', is_string($_mfseo_plugin_url) && !empty($_mfseo_plugin_url) ? $_mfseo_plugin_url : plugins_url('/', __FILE__));
+define('MINDFULSEO_PLUGIN_FILE', is_string($_mfseo_plugin_file) && !empty($_mfseo_plugin_file) ? $_mfseo_plugin_file : __FILE__);
+define('MINDFULSEO_PLUGIN_BASENAME', is_string($_mfseo_plugin_basename) && !empty($_mfseo_plugin_basename) ? $_mfseo_plugin_basename : basename(dirname(__FILE__)) . '/' . basename(__FILE__));
+
+// Clean up temporary variables
+unset($_mfseo_plugin_dir, $_mfseo_plugin_url, $_mfseo_plugin_file, $_mfseo_plugin_basename);
 
 /**
  * Main MindfulSEO Class
@@ -67,10 +77,13 @@ final class MindfulSEO {
      * Define additional plugin constants
      */
     private function define_constants() {
-        // Upload directories
+        // Upload directories - ensure values are not null (PHP 8.x compatibility)
         $upload_dir = wp_upload_dir();
-        define('MINDFULSEO_UPLOAD_DIR', $upload_dir['basedir'] . '/mindfulseo/');
-        define('MINDFULSEO_UPLOAD_URL', $upload_dir['baseurl'] . '/mindfulseo/');
+        $basedir = isset($upload_dir['basedir']) && is_string($upload_dir['basedir']) ? $upload_dir['basedir'] : WP_CONTENT_DIR . '/uploads';
+        $baseurl = isset($upload_dir['baseurl']) && is_string($upload_dir['baseurl']) ? $upload_dir['baseurl'] : content_url('uploads');
+        
+        define('MINDFULSEO_UPLOAD_DIR', $basedir . '/mindfulseo/');
+        define('MINDFULSEO_UPLOAD_URL', $baseurl . '/mindfulseo/');
         
         // Sub-directories
         define('MINDFULSEO_GUIDELINES_DIR', MINDFULSEO_UPLOAD_DIR . 'guidelines/');
@@ -82,8 +95,12 @@ final class MindfulSEO {
      * Load required dependencies
      */
     private function load_dependencies() {
-        // Helper function to safely require files
+        // Helper function to safely require files (PHP 8.x compatible)
         $require_if_exists = function($file) {
+            // Ensure $file is a valid string path before file_exists (prevents null deprecation)
+            if (!is_string($file) || empty($file)) {
+                return false;
+            }
             if (file_exists($file)) {
                 require_once $file;
                 return true;
@@ -107,11 +124,18 @@ final class MindfulSEO {
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-blog-writer.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-content-researcher.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-csv-importer.php');
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-content-cluster-engine.php');
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-gap-analyzer.php');
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-internal-linker.php');
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-cache-manager.php');
         
         // Admin classes - always load them, WordPress will handle is_admin() internally
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'admin/class-admin.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'admin/class-admin-page.php');
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'admin/class-batch-optimizer-page.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'admin/class-post-meta-box.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'admin/class-batch-processor.php');
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'admin/class-setup-wizard.php');
     }
     
     /**
@@ -156,6 +180,11 @@ final class MindfulSEO {
         
         // Show welcome notice
         set_transient('mindfulseo_activation_notice', true, 60);
+        
+        // Set wizard needed flag if not already completed
+        if (!get_option('mindfulseo_wizard_completed')) {
+            update_option('mindfulseo_wizard_needed', true);
+        }
         
         // Flush rewrite rules
         flush_rewrite_rules();
@@ -363,15 +392,19 @@ final class MindfulSEO {
         );
         
         foreach ($directories as $dir) {
+            // PHP 8.x: Ensure directory path is valid string before file_exists/wp_mkdir_p
+            if (!is_string($dir) || empty($dir)) {
+                continue;
+            }
             if (!file_exists($dir)) {
                 wp_mkdir_p($dir);
                 
                 // Create .htaccess for security
                 $htaccess_content = "Options -Indexes\nDeny from all";
-                file_put_contents($dir . '.htaccess', $htaccess_content);
+                @file_put_contents($dir . '.htaccess', $htaccess_content);
                 
                 // Create index.php for security
-                file_put_contents($dir . 'index.php', '<?php // Silence is golden');
+                @file_put_contents($dir . 'index.php', '<?php // Silence is golden');
             }
         }
     }
@@ -398,7 +431,7 @@ final class MindfulSEO {
             'openai_model_alt' => 'gpt-4o',                     // GPT-4o (fallback)
             // Claude models (November 2025 - Latest)
             'claude_model' => 'claude-sonnet-4-5',              // Claude Sonnet 4.5 (Released Sep 2025)
-            'claude_model_alt' => 'claude-3-5-sonnet-20241022', // Claude 3.5 Sonnet (fallback)
+            'claude_model_alt' => 'claude-3-5-sonnet-20240620', // Claude 3.5 Sonnet Jun 2024 (fallback)
             // Blog writer settings
             'blog_writer_default_length' => 1500,
             'blog_writer_default_tone' => 'educational',
@@ -432,9 +465,20 @@ final class MindfulSEO {
      * Initialize admin
      */
     public function init_admin() {
-        // Initialize admin page class early so it can hook into admin_menu
+        // Initialize new admin class (v2.0) for redesigned UI
+        if (class_exists('MFSEO_Admin')) {
+            MFSEO_Admin::get_instance();
+        }
+        
+        // Initialize legacy admin page class for backward compatibility
+        // This provides the render methods that new page classes delegate to
         if (class_exists('MFSEO_Admin_Page')) {
             MFSEO_Admin_Page::get_instance();
+        }
+        
+        // Initialize Content Cluster Engine
+        if (class_exists('MFSEO_Content_Cluster_Engine')) {
+            MFSEO_Content_Cluster_Engine::get_instance();
         }
     }
     

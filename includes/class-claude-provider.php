@@ -25,18 +25,26 @@ class MFSEO_Claude_Provider {
     private $api_endpoint = 'https://api.anthropic.com/v1/messages';
     
     /**
-     * Default model
+     * Default model — reads from saved settings so it respects the user's choice
      */
-    private $default_model = 'claude-3-5-sonnet-20241022';
+    private $default_model = 'claude-sonnet-4-5';
+
+    /**
+     * Load default model from plugin settings
+     */
+    private function get_default_model() {
+        $settings = get_option( 'mindfulseo_settings', array() );
+        return ! empty( $settings['claude_model'] ) ? $settings['claude_model'] : $this->default_model;
+    }
     
     /**
      * Available models
      */
     private $available_models = [
-        'claude-3-5-sonnet-20241022',
+        'claude-sonnet-4-5',
+        'claude-opus-4-1',
+        'claude-3-5-sonnet-20240620',
         'claude-3-opus-20240229',
-        'claude-3-sonnet-20240229',
-        'claude-3-haiku-20240307',
     ];
     
     /**
@@ -53,8 +61,10 @@ class MFSEO_Claude_Provider {
         try {
             $response = $this->call_api(
                 'Respond with "OK" if you can read this.',
-                'claude-3-haiku-20240307', // Use cheaper model for testing
-                50 // Max tokens
+                'claude-sonnet-4-5',
+                50,
+                0.7,
+                'connection_test'
             );
             
             if ($response && isset($response['content'][0]['text'])) {
@@ -80,13 +90,13 @@ class MFSEO_Claude_Provider {
     /**
      * Call Claude API
      */
-    public function call_api($prompt, $model = null, $max_tokens = 1000, $temperature = 0.7) {
+    public function call_api($prompt, $model = null, $max_tokens = 1000, $temperature = 0.7, $usage_context = '') {
         if (empty($this->api_key)) {
             throw new Exception(__('Claude API key is not configured.', 'mindfulseo'));
         }
-        
+
         if (!$model) {
-            $model = $this->default_model;
+            $model = $this->get_default_model();
         }
         
         // Build request body (Claude uses different format than OpenAI)
@@ -94,7 +104,7 @@ class MFSEO_Claude_Provider {
             'model' => $model,
             'max_tokens' => $max_tokens,
             'temperature' => $temperature,
-            'system' => 'You are an expert SEO consultant and content writer specializing in Buddhist content for FPMT (Foundation for the Preservation of the Mahayana Tradition).',
+            'system' => 'You are an expert SEO consultant and content writer. Follow any language guidelines provided in the prompt.',
             'messages' => [
                 [
                     'role' => 'user',
@@ -142,11 +152,14 @@ class MFSEO_Claude_Provider {
             throw new Exception(__('Invalid response from Claude API.', 'mindfulseo'));
         }
         
-        // Log usage
-        if (isset($data['usage'])) {
-            do_action('mindfulseo_api_usage', 'claude', $model, $data['usage']);
+        // Log usage to the MindfulSEO cost tracker
+        if ( isset( $data['usage'] ) && class_exists( 'MFSEO_Logger' ) ) {
+            $input_tokens  = isset( $data['usage']['input_tokens'] )  ? (int) $data['usage']['input_tokens']  : 0;
+            $output_tokens = isset( $data['usage']['output_tokens'] ) ? (int) $data['usage']['output_tokens'] : 0;
+            $cost = $this->estimate_cost( $model, $input_tokens, $output_tokens );
+            MFSEO_Logger::get_instance()->log_api_call( 'claude', $input_tokens, $output_tokens, $cost, $model, $usage_context );
         }
-        
+
         return $data;
     }
     
@@ -157,7 +170,7 @@ class MFSEO_Claude_Provider {
         $prompt = $this->create_optimization_prompt($content, $keyword, $guidelines, $search_intent);
         
         try {
-            $response = $this->call_api($prompt, $this->default_model, 1500);
+            $response = $this->call_api($prompt, $this->get_default_model(), 1500, 0.7, 'optimize_content');
             return $this->parse_optimization_response($response);
             
         } catch (Exception $e) {
@@ -190,14 +203,14 @@ REQUIREMENTS:
 - Include the keyword naturally
 - 55-60 characters long
 - Compelling and click-worthy
-- Respect Buddhist terminology guidelines
+- Respect any language guidelines provided
 - No clickbait or exaggeration
 
 Respond with ONLY the title, no explanations.
 PROMPT;
         
         try {
-            $response = $this->call_api($prompt, $this->default_model, 100, 0.8);
+            $response = $this->call_api($prompt, $this->get_default_model(), 100, 0.8, 'generate_seo_title');
             $title = trim($response['content'][0]['text']);
             
             // Remove quotes if AI added them
@@ -238,13 +251,13 @@ REQUIREMENTS:
 - 150-155 characters long
 - Clear value proposition
 - Call-to-action where appropriate
-- Respect Buddhist terminology guidelines
+- Respect any language guidelines provided
 
 Respond with ONLY the meta description, no explanations.
 PROMPT;
         
         try {
-            $response = $this->call_api($prompt, $this->default_model, 100, 0.8);
+            $response = $this->call_api($prompt, $this->get_default_model(), 100, 0.8, 'generate_meta_description');
             $description = trim($response['content'][0]['text']);
             
             // Remove quotes if AI added them
@@ -271,7 +284,7 @@ PROMPT;
         $content_excerpt = $this->truncate_content($content, 3000);
         
         $prompt = <<<PROMPT
-You are an SEO expert optimizing content for FPMT (Foundation for the Preservation of the Mahayana Tradition).
+You are an SEO expert optimizing website content.
 
 LANGUAGE GUIDELINES:
 {$guidelines_text}
@@ -284,12 +297,12 @@ CONTENT TO OPTIMIZE:
 {$content_excerpt}
 
 TASK:
-Generate SEO optimizations while respecting the language guidelines and Buddhist terminology. Provide:
+Generate SEO optimizations while respecting any language guidelines provided. Provide:
 
 1. **Optimized SEO Title** (55-60 characters)
    - Include primary keyword naturally
    - Compelling and click-worthy
-   - Respect FPMT language preferences
+   - Respect any language guidelines provided
 
 2. **Meta Description** (150-155 characters)
    - Include primary keyword
@@ -386,6 +399,9 @@ PROMPT;
      * Truncate content for API
      */
     private function truncate_content($content, $max_chars = 3000) {
+        // PHP 8.x null safety: ensure content is a string
+        $content = is_string($content) ? $content : '';
+        
         // Remove HTML tags
         $content = wp_strip_all_tags($content);
         
@@ -397,6 +413,27 @@ PROMPT;
         return $content;
     }
     
+    /**
+     * Estimate cost in USD for a Claude call (rates per 1K tokens, March 2026)
+     */
+    private function estimate_cost( $model, $input_tokens, $output_tokens ) {
+        if ( strpos( $model, 'claude-haiku-4' ) === 0 || strpos( $model, 'claude-3-5-haiku' ) !== false ) {
+            $in_rate  = 0.0008;
+            $out_rate = 0.004;
+        } elseif ( strpos( $model, 'claude-opus-4' ) === 0 || strpos( $model, 'claude-3-opus' ) !== false ) {
+            $in_rate  = 0.015;
+            $out_rate = 0.075;
+        } elseif ( strpos( $model, 'claude-3-haiku' ) !== false ) {
+            $in_rate  = 0.00025;
+            $out_rate = 0.00125;
+        } else {
+            // Sonnet 4.5 / 3.5 Sonnet default: $3/$15 per 1M
+            $in_rate  = 0.003;
+            $out_rate = 0.015;
+        }
+        return ( $input_tokens / 1000 * $in_rate ) + ( $output_tokens / 1000 * $out_rate );
+    }
+
     /**
      * Get available models
      */
