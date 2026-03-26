@@ -3,7 +3,7 @@
  * Plugin Name: MindfulSEO
  * Plugin URI: https://mindfuldesign.me
  * Description: AI-powered SEO optimization and blog content generation with brand-aware guidelines. Works with RankMath and Yoast SEO.
- * Version: 2.2.2
+ * Version: 2.3.0
  * Author: Mindful Design
  * Author URI: https://mindfuldesign.me
  * License: GPL v2 or later
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants with PHP 8.x null safety
-define('MINDFULSEO_VERSION', '2.2.4');
+define('MINDFULSEO_VERSION', '2.3.0');
 
 // Ensure path functions return valid strings (PHP 8.x compatibility)
 $_mfseo_plugin_dir = plugin_dir_path(__FILE__);

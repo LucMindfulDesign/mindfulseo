@@ -25,7 +25,7 @@
 - ✅ `assets/js/content-hub.js` - Content Hub interactions
 
 ### Updated Files (Modified from Git)
-- ✅ `mindfulseo.php` - v2.2.2, loads new classes
+- ✅ `mindfulseo.php` - v2.3.0, loads new classes
 - ✅ `includes/class-optimizer.php` - PHP 8.x null safety (4 fixes)
 - ✅ `includes/class-ajax-handlers.php` - DataForSEO + Internal linking fixes
 - ✅ `admin/class-admin-page.php` - (existing modifications preserved)
@@ -123,7 +123,7 @@ Please test the following:
 
 ## 📋 CURRENT STATUS
 
-**Plugin Version:** 2.2.2
+**Plugin Version:** 2.3.0
 **Files Created:** 10 new files
 **Files Modified:** 5 existing files
 **PHP Errors:** None (debug.log clean)

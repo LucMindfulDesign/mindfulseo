@@ -1,8 +1,10 @@
 # MindfulSEO WordPress Plugin
 
-**Version:** 1.0.0  
+**Version:** 2.3.0  
 **Author:** [Mindful Design](https://mindfuldesign.me)  
 **Website:** [mindfuldesign.me](https://mindfuldesign.me)
+
+> **Release history:** see [CHANGELOG.md](CHANGELOG.md) (detailed) and **Changelog** below.
 
 ---
 
@@ -86,6 +88,16 @@ See [instructions.md](instructions.md) for comprehensive documentation including
 - DataForSEO integration details
 
 ## Changelog
+
+### 2.3.0 (2026-03-26)
+
+- **New:** Setup wizard, dashboard, content hub, keywords admin section
+- **New:** Content cluster engine, gap analyzer, internal linker, cache manager
+- **Updated:** Batch optimizer, SEO audit, admin UI, AI connectors, guidelines/keyword/data pipeline
+- **Housekeeping:** Version alignment (`Version` header + `MINDFULSEO_VERSION`), `CHANGELOG.md`, WordPress-style `readme.txt`
+- **Removed:** Sample `test-data` CSV/MD from the repo
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ### 1.0.0
 - Initial public release
