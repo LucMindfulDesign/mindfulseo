@@ -222,23 +222,34 @@ class MFSEO_Guidelines_Engine {
                 continue;
             }
             
-            // --- Avoid term: "X" → Use "Y" (may have multiple alternatives) ---
-            if (preg_match('/\*\*Avoid:\*\*\s*"([^"]+)"\s*→\s*Use\s+"([^"]+)"/i', $line, $matches)) {
+            // --- Avoid term: "X" → Use "Y" (Unicode arrow, ASCII ->, =>; multiple quoted alternatives after Use) ---
+            if (preg_match('/\*\*Avoid:\*\*\s*"([^"]+)"\s*(?:→|->|=>)\s*Use\s+(.+)/iu', $line, $matches)) {
                 $avoid = trim($matches[1]);
-                $preferred = rtrim(trim($matches[2]), ',');
-                
+                $after_use = trim($matches[2]);
+                $preferred_parts = array();
+                if (preg_match_all('/"([^"]+)"/', $after_use, $quoted)) {
+                    foreach ($quoted[1] as $p) {
+                        $p = rtrim(trim($p), ',');
+                        if ($p !== '') {
+                            $preferred_parts[] = $p;
+                        }
+                    }
+                }
+                $preferred = ! empty($preferred_parts) ? implode(' / ', $preferred_parts) : '';
+
                 $context = $current_section;
-                // Grab parenthetical note at end of line if present
                 if (preg_match('/\(([^)]+)\)\s*$/', $line, $note)) {
                     $context .= ' — ' . trim($note[1]);
                 }
-                
-                $rules[] = array(
-                    'rule_type' => 'avoid_term',
-                    'avoid_term' => $avoid,
-                    'preferred_term' => $preferred,
-                    'context' => $context
-                );
+
+                if ($avoid !== '' && $preferred !== '') {
+                    $rules[] = array(
+                        'rule_type' => 'avoid_term',
+                        'avoid_term' => $avoid,
+                        'preferred_term' => $preferred,
+                        'context' => $context,
+                    );
+                }
                 continue;
             }
             
@@ -287,24 +298,28 @@ class MFSEO_Guidelines_Engine {
                 continue;
             }
             
-            // --- Preferred: Use "X" for/when Y → preferred_term rule ---
+            // --- Preferred: Use "X" for/when Y → preferred_term rule (multiple quoted terms → one rule each) ---
             if (preg_match('/\*\*Preferred:\*\*\s*(.+)/i', $line, $matches)) {
                 $text = trim($matches[1]);
-                if (preg_match('/(?:Use\s+)?"([^"]+)"/i', $text, $pref)) {
-                    $preferred = rtrim(trim($pref[1]), ',');
-                    // Extract parenthetical or "for ..." context
-                    $ctx = $current_section;
-                    if (preg_match('/\(([^)]+)\)/', $text, $note)) {
-                        $ctx .= ' — ' . trim($note[1]);
-                    } elseif (preg_match('/for\s+(.+)/i', $text, $note)) {
-                        $ctx .= ' — for ' . rtrim(trim($note[1]), '.');
+                $ctx = $current_section;
+                if (preg_match('/\(([^)]+)\)/', $text, $note)) {
+                    $ctx .= ' — ' . trim($note[1]);
+                } elseif (preg_match('/for\s+(.+)/i', $text, $note)) {
+                    $ctx .= ' — for ' . rtrim(trim($note[1]), '.');
+                }
+                if (preg_match_all('/"([^"]+)"/', $text, $all_pref)) {
+                    foreach ($all_pref[1] as $preferred) {
+                        $preferred = rtrim(trim($preferred), ',');
+                        if ($preferred === '') {
+                            continue;
+                        }
+                        $rules[] = array(
+                            'rule_type' => 'preferred_term',
+                            'avoid_term' => '',
+                            'preferred_term' => $preferred,
+                            'context' => $ctx,
+                        );
                     }
-                    $rules[] = array(
-                        'rule_type' => 'preferred_term',
-                        'avoid_term' => '',
-                        'preferred_term' => $preferred,
-                        'context' => $ctx
-                    );
                 }
                 continue;
             }
@@ -429,6 +444,110 @@ class MFSEO_Guidelines_Engine {
         }
         
         return $wpdb->get_results($query);
+    }
+
+    /**
+     * Rules that must survive wizard guideline refresh (not AI/Auto disposable buckets).
+     *
+     * @return object[] Full row objects.
+     */
+    public function get_preservable_guideline_rows() {
+        global $wpdb;
+        if ( ! $this->table_exists() ) {
+            return array();
+        }
+        return $wpdb->get_results(
+            "SELECT * FROM {$this->table_name}
+             WHERE guideline_source IS NULL
+                OR TRIM( IFNULL( guideline_source, '' ) ) = ''
+                OR LOWER( TRIM( guideline_source ) ) NOT IN ( 'auto-generated', 'ai-generated' )",
+            OBJECT
+        );
+    }
+
+    /**
+     * Restore preservable guideline rows if missing (same type + avoid + preferred).
+     *
+     * @param object[] $rows From get_preservable_guideline_rows() before AI deletes.
+     * @return int Rows re-inserted.
+     */
+    public function reinsert_missing_guidelines( $rows ) {
+        global $wpdb;
+        if ( ! $this->table_exists() || empty( $rows ) || ! is_array( $rows ) ) {
+            return 0;
+        }
+        $n = 0;
+        foreach ( $rows as $row ) {
+            $type = isset( $row->rule_type ) ? (string) $row->rule_type : '';
+            if ( $type === '' ) {
+                continue;
+            }
+            $avoid = isset( $row->avoid_term ) ? (string) $row->avoid_term : '';
+            $pref  = isset( $row->preferred_term ) ? (string) $row->preferred_term : '';
+            $exists = $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT id FROM {$this->table_name} WHERE rule_type = %s AND avoid_term = %s AND preferred_term = %s LIMIT 1",
+                    $type,
+                    $avoid,
+                    $pref
+                )
+            );
+            if ( $exists ) {
+                continue;
+            }
+            $src    = isset( $row->guideline_source ) && $row->guideline_source !== '' ? $row->guideline_source : 'Manual';
+            $ctx    = isset( $row->context ) ? (string) $row->context : '';
+            $active = isset( $row->active ) ? ( (int) $row->active ? 1 : 0 ) : 1;
+            $ins    = $wpdb->insert(
+                $this->table_name,
+                array(
+                    'rule_type'        => $type,
+                    'avoid_term'       => $avoid,
+                    'preferred_term'   => $pref,
+                    'context'          => $ctx,
+                    'guideline_source' => $src,
+                    'active'           => $active,
+                    'created_date'     => isset( $row->created_date ) ? $row->created_date : current_time( 'mysql' ),
+                ),
+                array( '%s', '%s', '%s', '%s', '%s', '%d', '%s' )
+            );
+            if ( $ins ) {
+                $n++;
+            }
+        }
+        return $n;
+    }
+
+    /**
+     * Text snapshot of imported/manual rules (excludes Auto-generated and AI-generated) for AI prompts.
+     *
+     * @param int $max_chars Max character length.
+     * @param int $max_rules Max rules to include.
+     * @return string
+     */
+    public function get_editor_policy_snapshot_text( $max_chars = 12000, $max_rules = 250 ) {
+        $rules = $this->get_all_rules( array( 'active_only' => true ) );
+        $skip  = array( 'Auto-generated', 'AI-generated' );
+        $lines = array();
+        foreach ( $rules as $rule ) {
+            $src = isset( $rule->guideline_source ) ? $rule->guideline_source : '';
+            if ( in_array( $src, $skip, true ) ) {
+                continue;
+            }
+            $at = isset( $rule->avoid_term ) ? $rule->avoid_term : '';
+            $lines[] = sprintf(
+                '- [%s] %s → %s (source: %s)',
+                $rule->rule_type,
+                ( $at !== '' && $at !== null ) ? $at : '—',
+                $rule->preferred_term,
+                $src
+            );
+        }
+        $out = implode( "\n", array_slice( $lines, 0, $max_rules ) );
+        if ( strlen( $out ) > $max_chars ) {
+            $out = substr( $out, 0, $max_chars ) . "\n[…]";
+        }
+        return $out;
     }
     
     /**
@@ -733,6 +852,59 @@ class MFSEO_Guidelines_Engine {
         }
         
         return $wpdb->insert_id;
+    }
+
+    /**
+     * Wizard import: insert or refresh an existing rule (same type + avoid + preferred) so editor CSV/MD always wins over AI rows.
+     *
+     * @param array $rule Same shape as add_rule().
+     * @return int|WP_Error New or existing rule ID.
+     */
+    public function upsert_rule_wizard_import( array $rule ) {
+        global $wpdb;
+
+        if ( ! $this->table_exists() ) {
+            return new WP_Error( 'table_missing', __( 'Guidelines table is not available.', 'mindfulseo' ) );
+        }
+        if ( empty( $rule['rule_type'] ) ) {
+            return new WP_Error( 'invalid_rule', __( 'Rule type is required.', 'mindfulseo' ) );
+        }
+
+        $type      = sanitize_text_field( $rule['rule_type'] );
+        $avoid     = isset( $rule['avoid_term'] ) ? sanitize_text_field( $rule['avoid_term'] ) : '';
+        $preferred = isset( $rule['preferred_term'] ) ? sanitize_text_field( $rule['preferred_term'] ) : '';
+        $existing  = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT id FROM {$this->table_name} WHERE rule_type = %s AND avoid_term = %s AND preferred_term = %s LIMIT 1",
+                $type,
+                $avoid,
+                $preferred
+            )
+        );
+
+        $src    = isset( $rule['guideline_source'] ) ? sanitize_text_field( $rule['guideline_source'] ) : 'Wizard Import';
+        $ctx    = isset( $rule['context'] ) ? sanitize_textarea_field( $rule['context'] ) : '';
+        $active = isset( $rule['active'] ) ? (bool) $rule['active'] : true;
+
+        if ( $existing ) {
+            $ok = $wpdb->update(
+                $this->table_name,
+                array(
+                    'context'           => $ctx,
+                    'guideline_source'  => $src,
+                    'active'            => $active ? 1 : 0,
+                ),
+                array( 'id' => (int) $existing ),
+                array( '%s', '%s', '%d' ),
+                array( '%d' )
+            );
+            if ( $ok === false ) {
+                return new WP_Error( 'update_failed', __( 'Failed to update guideline rule.', 'mindfulseo' ) );
+            }
+            return (int) $existing;
+        }
+
+        return $this->add_rule( $rule );
     }
     
     /**

@@ -151,7 +151,77 @@
     line-height: 1.5;
 }
 
-/* ── Provider cards ── */
+/* ── Step 1: credentials card (dropdown + key panels) ── */
+.mfseo-wizard-step1-credentials {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #f8fafc;
+    padding: 22px 24px 16px;
+    margin: 12px 0 4px;
+    max-width: 560px;
+    contain: layout style;
+}
+
+#wizard-step-1 .mfseo-wizard-ai-connection {
+    margin-bottom: 20px;
+}
+
+#wizard-step-1 .mfseo-wizard-api-config {
+    margin-bottom: 0;
+    display: none;
+}
+
+#wizard-step-1[data-ai-panel="openai"] #openai-config,
+#wizard-step-1[data-ai-panel="claude"] #claude-config,
+#wizard-step-1[data-ai-panel="openrouter"] #openrouter-config {
+    display: block;
+}
+
+#wizard-step-1 .mfseo-wizard-actions {
+    justify-content: flex-start;
+    margin-top: 20px;
+    padding-top: 20px;
+}
+
+/* ── Step 1: AI connection dropdown ── */
+.mfseo-wizard-ai-connection {
+    margin-bottom: 24px;
+}
+
+.mfseo-wizard-ai-connection-label {
+    display: block;
+    margin-bottom: 8px;
+    color: #1e293b;
+}
+
+.mfseo-wizard-ai-connection .mfseo-wizard-select,
+.mfseo-wizard-ai-connection select.mfseo-wizard-select {
+    max-width: 100%;
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 14px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    line-height: 1.4;
+}
+
+.mfseo-wizard-ai-connection .mfseo-wizard-ai-connection-hint {
+    margin: 10px 0 0;
+    font-size: 13px;
+    color: #64748b;
+}
+
+.mfseo-wizard-openrouter-model-label {
+    display: block;
+    margin-top: 16px;
+}
+
+.mfseo-wizard-openrouter-model-label .mfseo-wizard-select {
+    margin-top: 6px;
+}
+
+/* ── Provider cards (legacy) ── */
 .mfseo-wizard-providers {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -480,6 +550,17 @@
     font-style: italic;
     line-height: 1.45;
     color: #64748b;
+}
+
+.mfseo-wizard-saved-controls-note {
+    margin: 10px 0 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #b45309;
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: 6px;
+    padding: 8px 10px;
 }
 
 .mfseo-wizard-hidden-meta {
@@ -1173,7 +1254,7 @@ body.mfseo-wizard-modal-open {
     .mfseo-wizard-header { padding: 24px 20px 20px; }
     .mfseo-wizard-body { padding: 24px 20px; }
     .mfseo-wizard-footer { padding: 14px 20px; }
-    .mfseo-wizard-providers,
+    .mfseo-wizard-step1-credentials { max-width: none; padding: 18px 16px; }
     .mfseo-wizard-site-types,
     .mfseo-wizard-analyze-cards { grid-template-columns: 1fr; }
     .mfseo-wizard-actions { flex-direction: column; }

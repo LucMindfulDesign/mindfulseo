@@ -3,7 +3,7 @@
  * Plugin Name: MindfulSEO
  * Plugin URI: https://mindfuldesign.me
  * Description: AI-powered SEO optimization and blog content generation with brand-aware guidelines. Works with RankMath and Yoast SEO.
- * Version: 2.3.0
+ * Version: 2.4.0
  * Author: Mindful Design
  * Author URI: https://mindfuldesign.me
  * License: GPL v2 or later
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants with PHP 8.x null safety
-define('MINDFULSEO_VERSION', '2.3.0');
+define('MINDFULSEO_VERSION', '2.4.0');
 
 // Ensure path functions return valid strings (PHP 8.x compatibility)
 $_mfseo_plugin_dir = plugin_dir_path(__FILE__);
@@ -112,6 +112,7 @@ final class MindfulSEO {
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-logger.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-seo-plugin-adapter.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-openai-provider.php');
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-openrouter-provider.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-claude-provider.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-ai-connector.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-dataforseo-connector.php');
@@ -124,6 +125,7 @@ final class MindfulSEO {
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-blog-writer.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-content-researcher.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-csv-importer.php');
+        $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-post-import-export.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-content-cluster-engine.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-gap-analyzer.php');
         $require_if_exists(MINDFULSEO_PLUGIN_DIR . 'includes/class-internal-linker.php');
@@ -285,16 +287,20 @@ final class MindfulSEO {
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             log_type VARCHAR(50) NOT NULL,
             post_id BIGINT UNSIGNED,
-            ai_provider VARCHAR(20),
+            ai_provider VARCHAR(32),
+            ai_model VARCHAR(191),
             prompt_tokens INT,
             completion_tokens INT,
+            usage_context VARCHAR(80),
             cost DECIMAL(10,4),
             message TEXT,
+            api_call_kind VARCHAR(20) DEFAULT 'production',
             user_id BIGINT UNSIGNED,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             INDEX log_type_idx (log_type),
             INDEX post_id_idx (post_id),
-            INDEX created_at_idx (created_at)
+            INDEX created_at_idx (created_at),
+            INDEX api_call_kind_idx (api_call_kind)
         ) $charset_collate;";
         
         // Execute table creation
@@ -304,7 +310,7 @@ final class MindfulSEO {
         dbDelta($sql_logs);
         
         // Store database version
-        update_option('mindfulseo_db_version', '1.2.0');
+        update_option('mindfulseo_db_version', '1.3.0');
     }
     
     /**
@@ -319,6 +325,10 @@ final class MindfulSEO {
         
         if (version_compare($current_version, '1.2.0', '<')) {
             $this->upgrade_database_to_1_2_0();
+        }
+
+        if (version_compare(get_option('mindfulseo_db_version', '1.0.0'), '1.3.0', '<')) {
+            $this->upgrade_database_to_1_3_0();
         }
     }
     
@@ -379,6 +389,40 @@ final class MindfulSEO {
         
         update_option('mindfulseo_db_version', '1.2.0');
     }
+
+    /**
+     * Upgrade mindfulseo_logs for per-model usage tracking and connection-test rows.
+     */
+    private function upgrade_database_to_1_3_0() {
+        global $wpdb;
+        $table = $wpdb->prefix . 'mindfulseo_logs';
+        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+        if ($exists !== $table) {
+            update_option('mindfulseo_db_version', '1.3.0');
+            return;
+        }
+        $columns = $wpdb->get_col("DESC {$table}", 0);
+        if (!is_array($columns)) {
+            $columns = array();
+        }
+        if (!in_array('ai_model', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN ai_model VARCHAR(191) NULL AFTER ai_provider");
+        }
+        $columns = $wpdb->get_col("DESC {$table}", 0);
+        if (!in_array('usage_context', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN usage_context VARCHAR(80) NULL AFTER completion_tokens");
+        }
+        $columns = $wpdb->get_col("DESC {$table}", 0);
+        if (!in_array('api_call_kind', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN api_call_kind VARCHAR(20) NULL DEFAULT 'production' AFTER message");
+        }
+        $wpdb->query("ALTER TABLE {$table} MODIFY ai_provider VARCHAR(32) NULL");
+        $idx = $wpdb->get_results("SHOW INDEX FROM {$table} WHERE Key_name = 'api_call_kind_idx'", ARRAY_A);
+        if (empty($idx)) {
+            $wpdb->query("ALTER TABLE {$table} ADD INDEX api_call_kind_idx (api_call_kind)");
+        }
+        update_option('mindfulseo_db_version', '1.3.0');
+    }
     
     /**
      * Create upload directories
@@ -436,6 +480,12 @@ final class MindfulSEO {
             'blog_writer_default_length' => 1500,
             'blog_writer_default_tone' => 'educational',
             'include_faq' => true,
+            'ai_backend' => 'direct',
+            'openrouter_api_key' => '',
+            'openrouter_model' => 'qwen/qwen3.5-flash-02-23',
+            'openrouter_model_fast' => 'minimax/minimax-m2.5',
+            'openrouter_custom_model' => '',
+            'openrouter_http_referer' => '',
             'version' => MINDFULSEO_VERSION,
         );
         

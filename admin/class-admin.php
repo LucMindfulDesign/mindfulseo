@@ -56,6 +56,9 @@ class MFSEO_Admin {
         if (class_exists('MFSEO_Setup_Wizard')) {
             MFSEO_Setup_Wizard::get_instance();
         }
+        if (class_exists('MFSEO_Post_Import_Export')) {
+            MFSEO_Post_Import_Export::init();
+        }
         
         // Setup wizard hooks
         add_action('admin_notices', array($this, 'maybe_show_wizard_notice'));
@@ -197,6 +200,16 @@ class MFSEO_Admin {
             array($this, 'render_batch_optimize_page')
         );
         
+        // Import / Export
+        $this->hook_suffixes['import_export'] = add_submenu_page(
+            'mindfulseo',
+            __('Import / Export', 'mindfulseo'),
+            __('Import / Export', 'mindfulseo'),
+            'manage_options',
+            'mindfulseo-import-export',
+            array($this, 'render_import_export_page')
+        );
+        
         // Settings
         $this->hook_suffixes['settings'] = add_submenu_page(
             'mindfulseo',
@@ -223,6 +236,14 @@ class MFSEO_Admin {
         });
     }
     
+    public function render_import_export_page() {
+        if (class_exists('MFSEO_Post_Import_Export')) {
+            MFSEO_Post_Import_Export::render_page();
+            return;
+        }
+        echo '<div class="wrap"><div class="notice notice-error"><p>Import/Export unavailable.</p></div></div>';
+    }
+
     /**
      * Render dashboard page
      */
@@ -491,18 +512,23 @@ class MFSEO_Admin {
             return;
         }
 
+        $css_path = MINDFULSEO_PLUGIN_DIR . 'assets/css/setup-wizard.css';
+        $js_path  = MINDFULSEO_PLUGIN_DIR . 'assets/js/setup-wizard.js';
+        $ver_css  = MINDFULSEO_VERSION . (file_exists($css_path) ? '.' . (string) filemtime($css_path) : '');
+        $ver_js   = MINDFULSEO_VERSION . (file_exists($js_path) ? '.' . (string) filemtime($js_path) : '');
+
         wp_enqueue_style(
             'mindfulseo-wizard',
             MINDFULSEO_PLUGIN_URL . 'assets/css/setup-wizard.css',
             array(),
-            MINDFULSEO_VERSION
+            $ver_css
         );
 
         wp_enqueue_script(
             'mindfulseo-wizard',
             MINDFULSEO_PLUGIN_URL . 'assets/js/setup-wizard.js',
             array('jquery'),
-            MINDFULSEO_VERSION,
+            $ver_js,
             true
         );
 
@@ -526,8 +552,12 @@ class MFSEO_Admin {
                 'glLabelCreated' => __('guidelines created', 'mindfulseo'),
                 'glLabelSaved' => __('guidelines in use', 'mindfulseo'),
                 'continueToNext' => __('Continue', 'mindfulseo') . ' →',
-                'selectRegenerateArea' => __('Choose at least one: Regenerate keywords or Regenerate guidelines — or turn “Use saved” on to improve everything using your current strategy.', 'mindfulseo'),
+                'selectRegenerateArea' => __('Choose at least one: Regenerate keywords or Regenerate guidelines — or turn “Use imported & saved strategy” on to improve everything using your current strategy.', 'mindfulseo'),
+                'savedSummaryLine' => __('You have %1$s keywords and %2$s language guidelines saved in MindfulSEO.', 'mindfulseo'),
+                'savedSummaryEmpty' => __('No keywords or guidelines in MindfulSEO yet — import files below, then run analysis (or analyze first).', 'mindfulseo'),
                 'formatExampleMissing' => __('Example content could not be loaded. Try closing and opening again, or reload the page.', 'mindfulseo'),
+                'wizardPreservationSummary' => __('Protected your imports: %1$s keyword row(s) and %2$s guideline row(s) from files or manual entry were kept; AI additions are separate.', 'mindfulseo'),
+                'wizardPreservationRestored' => __(' Re-synced %1$s keyword and %2$s guideline row(s) that were missing (data restored).', 'mindfulseo'),
             ),
         ));
     }

@@ -154,6 +154,62 @@ class MFSEO_Internal_Linker {
     }
 
     /**
+     * Parse <a href> tags from HTML and return visible link text (for broken-link reports).
+     *
+     * @param string $html Post content HTML.
+     * @return array<int, array{href: string, text: string}>
+     */
+    private function parse_a_tags_from_html( $html ) {
+        $links = array();
+        if ( $html === '' ) {
+            return $links;
+        }
+
+        if ( class_exists( 'DOMDocument' ) ) {
+            libxml_use_internal_errors( true );
+            $doc = new DOMDocument();
+            $wrapped = '<?xml encoding="utf-8"?><div id="mfseo-link-parse-root">' . $html . '</div>';
+            $ok      = @$doc->loadHTML( $wrapped, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+            libxml_clear_errors();
+            if ( $ok ) {
+                $xp = new DOMXPath( $doc );
+                foreach ( $xp->query( '//a[@href]' ) as $node ) {
+                    if ( ! ( $node instanceof DOMElement ) ) {
+                        continue;
+                    }
+                    $href = $node->getAttribute( 'href' );
+                    $text = trim( preg_replace( '/\s+/u', ' ', $node->textContent ) );
+                    if ( $text === '' ) {
+                        $t = trim( $node->getAttribute( 'title' ) );
+                        if ( $t !== '' ) {
+                            $text = $t;
+                        }
+                    }
+                    $links[] = array(
+                        'href' => $href,
+                        'text' => $text,
+                    );
+                }
+                if ( ! empty( $links ) ) {
+                    return $links;
+                }
+            }
+        }
+
+        preg_match_all( '/href=["\']([^"\']*)["\']/i', $html, $matches );
+        if ( ! empty( $matches[1] ) ) {
+            foreach ( $matches[1] as $raw ) {
+                $links[] = array(
+                    'href' => $raw,
+                    'text' => '',
+                );
+            }
+        }
+
+        return $links;
+    }
+
+    /**
      * Perform the actual broken link scan (all published posts/pages — no time cap on DB pass).
      * Single long request; prefer chunked AJAX for large sites.
      */
@@ -274,13 +330,10 @@ class MFSEO_Internal_Linker {
                 continue;
             }
 
-            preg_match_all( '/href=["\']([^"\']*)["\']/i', $post['post_content'], $matches );
-            if ( empty( $matches[1] ) ) {
-                continue;
-            }
-
-            foreach ( $matches[1] as $raw_url ) {
-                $url = $this->normalize_href_for_scan( $raw_url );
+            foreach ( $this->parse_a_tags_from_html( $post['post_content'] ) as $alink ) {
+                $raw_url   = isset( $alink['href'] ) ? $alink['href'] : '';
+                $link_text = isset( $alink['text'] ) ? $alink['text'] : '';
+                $url       = $this->normalize_href_for_scan( $raw_url );
                 if ( ! $url ) {
                     continue;
                 }
@@ -314,6 +367,7 @@ class MFSEO_Internal_Linker {
                             'source_id'    => (int) $post['ID'],
                             'source_title' => $post['post_title'],
                             'broken_url'   => $url,
+                            'link_text'    => $link_text,
                             'edit_url'     => get_edit_post_link( (int) $post['ID'] ),
                         );
                     }
@@ -323,6 +377,7 @@ class MFSEO_Internal_Linker {
                             $state['unique_external'][ $url ] = array(
                                 'source_id'    => (int) $post['ID'],
                                 'source_title' => $post['post_title'],
+                                'link_text'    => $link_text,
                             );
                         } else {
                             $state['external_pool_truncated'] = true;
@@ -388,6 +443,7 @@ class MFSEO_Internal_Linker {
                     $broken_external[] = array(
                         'source_id'    => $meta['source_id'],
                         'source_title' => $meta['source_title'],
+                        'link_text'    => isset( $meta['link_text'] ) ? $meta['link_text'] : '',
                         'external_url' => $url,
                         'status_code'  => $status,
                         'status_label' => $label,

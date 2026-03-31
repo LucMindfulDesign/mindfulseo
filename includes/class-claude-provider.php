@@ -53,6 +53,15 @@ class MFSEO_Claude_Provider {
     public function __construct($api_key) {
         $this->api_key = $api_key;
     }
+
+    public function get_name() {
+        return 'Claude';
+    }
+
+    public function get_model() {
+        $settings = get_option('mindfulseo_settings', array());
+        return !empty($settings['claude_model']) ? $settings['claude_model'] : 'claude-sonnet-4-5';
+    }
     
     /**
      * Test API connection
@@ -153,11 +162,15 @@ class MFSEO_Claude_Provider {
         }
         
         // Log usage to the MindfulSEO cost tracker
-        if ( isset( $data['usage'] ) && class_exists( 'MFSEO_Logger' ) ) {
-            $input_tokens  = isset( $data['usage']['input_tokens'] )  ? (int) $data['usage']['input_tokens']  : 0;
-            $output_tokens = isset( $data['usage']['output_tokens'] ) ? (int) $data['usage']['output_tokens'] : 0;
-            $cost = $this->estimate_cost( $model, $input_tokens, $output_tokens );
-            MFSEO_Logger::get_instance()->log_api_call( 'claude', $input_tokens, $output_tokens, $cost, $model, $usage_context );
+        if ( class_exists( 'MFSEO_Logger' ) ) {
+            $norm = isset( $data['usage'] ) ? MFSEO_Logger::normalize_usage_tokens( $data['usage'] ) : null;
+            $call_kind = ( strpos( $usage_context, 'connection_test' ) !== false ) ? 'connection_test' : 'production';
+            if ( $norm === null ) {
+                MFSEO_Logger::get_instance()->log_api_call( 'claude', 0, 0, 0, $model, $usage_context, $call_kind, 'usage_missing' );
+            } else {
+                $cost = $this->estimate_cost( $model, $norm['in'], $norm['out'] );
+                MFSEO_Logger::get_instance()->log_api_call( 'claude', $norm['in'], $norm['out'], $cost, $model, $usage_context, $call_kind );
+            }
         }
 
         return $data;

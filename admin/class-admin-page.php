@@ -601,6 +601,11 @@ class MFSEO_Admin_Page {
         
         $settings = MindfulSEO::get_settings();
         $active_tab = isset($_GET['tab']) && $_GET['tab'] === 'usage' ? 'usage' : 'settings';
+        $mfseo_settings_main_ai = (! empty($settings['ai_backend']) && $settings['ai_backend'] === 'openrouter')
+            ? 'openrouter'
+            : (in_array(isset($settings['primary_provider']) ? $settings['primary_provider'] : '', array('openai', 'claude'), true)
+                ? $settings['primary_provider']
+                : 'openai');
         
         ?>
         <!-- Output WordPress notices OUTSIDE and BEFORE the wrap div -->
@@ -718,8 +723,65 @@ class MFSEO_Admin_Page {
                                 </p>
                             </th>
                         </tr>
-                        
+
                         <tr>
+                            <th scope="row">
+                                <label for="ai_backend"><?php _e('AI connection', 'mindfulseo'); ?></label>
+                            </th>
+                            <td>
+                                <select name="ai_backend" id="mfseo-ai-backend">
+                                    <option value="direct" <?php selected(isset($settings['ai_backend']) ? $settings['ai_backend'] : 'direct', 'direct'); ?>>
+                                        <?php _e('Direct — OpenAI & Claude APIs', 'mindfulseo'); ?>
+                                    </option>
+                                    <option value="openrouter" <?php selected(isset($settings['ai_backend']) ? $settings['ai_backend'] : 'direct', 'openrouter'); ?>>
+                                        <?php _e('OpenRouter (many models, one key)', 'mindfulseo'); ?>
+                                    </option>
+                                </select>
+                                <p class="description mfseo-backend-desc-direct"><?php _e('Connect using your OpenAI and Claude API keys. Choose which provider is primary below.', 'mindfulseo'); ?></p>
+                                <p class="description mfseo-backend-desc-or" style="display:none;"><?php _e('Traffic goes to OpenRouter first (Qwen, MiniMax, etc.). Optional OpenAI and Claude keys below are only used if OpenRouter fails and fallback is enabled—expand the section to configure them.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only">
+                            <th scope="row">
+                                <label for="openrouter_api_key"><?php _e('OpenRouter API Key', 'mindfulseo'); ?></label>
+                            </th>
+                            <td>
+                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                    <input type="password" id="openrouter_api_key" name="openrouter_api_key" class="regular-text"
+                                           value="<?php echo esc_attr(!empty($settings['openrouter_api_key']) ? '••••••••••••••••' : ''); ?>"
+                                           placeholder="sk-or-...">
+                                    <button type="button" id="test-openrouter-connection" class="button">
+                                        <span class="dashicons dashicons-admin-plugins" style="vertical-align:middle;margin-top:3px;"></span>
+                                        <?php _e('Test Connection', 'mindfulseo'); ?>
+                                    </button>
+                                    <span id="openrouter-status-indicator"></span>
+                                </div>
+                                <p class="description"><a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only">
+                            <th scope="row"><label for="openrouter_http_referer"><?php _e('OpenRouter HTTP-Referer', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <input type="url" class="regular-text" id="openrouter_http_referer" name="openrouter_http_referer"
+                                       value="<?php echo esc_attr(isset($settings['openrouter_http_referer']) ? $settings['openrouter_http_referer'] : ''); ?>"
+                                       placeholder="<?php echo esc_attr(home_url('/')); ?>">
+                                <p class="description"><?php _e('Optional. Defaults to this site URL for OpenRouter attribution.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-or-fallback-intro">
+                            <td colspan="2" style="padding-top:0;">
+                                <details id="mfseo-openrouter-fallback-details" class="mfseo-fallback-details" style="margin:4px 0 8px;">
+                                    <summary style="cursor:pointer;font-weight:600;"><?php esc_html_e('Optional: OpenAI & Claude for automatic fallback', 'mindfulseo'); ?></summary>
+                                    <p class="description" style="margin:8px 0 0;"><?php esc_html_e('If OpenRouter returns an error, MindfulSEO can retry with these direct APIs (same as “Direct” mode). Keys are optional but required for fallback to work.', 'mindfulseo'); ?></p>
+                                </details>
+                            </td>
+                        </tr>
+
+
+                        <tr class="mfseo-direct-cred-tr">
                             <th scope="row">
                                 <label for="openai_api_key"><?php _e('OpenAI API Key', 'mindfulseo'); ?></label>
                             </th>
@@ -744,7 +806,7 @@ class MFSEO_Admin_Page {
                             </td>
                         </tr>
                         
-                        <tr>
+                        <tr class="mfseo-direct-cred-tr">
                             <th scope="row">
                                 <label for="openai_model"><?php _e('OpenAI Model', 'mindfulseo'); ?></label>
                             </th>
@@ -776,7 +838,7 @@ class MFSEO_Admin_Page {
                             </td>
                         </tr>
                         
-                        <tr>
+                        <tr class="mfseo-direct-cred-tr">
                             <th scope="row">
                                 <label for="claude_api_key"><?php _e('Claude API Key', 'mindfulseo'); ?></label>
                             </th>
@@ -801,7 +863,7 @@ class MFSEO_Admin_Page {
                             </td>
                         </tr>
                         
-                        <tr>
+                        <tr class="mfseo-direct-cred-tr">
                             <th scope="row">
                                 <label for="claude_model"><?php _e('Claude Model', 'mindfulseo'); ?></label>
                             </th>
@@ -980,14 +1042,64 @@ class MFSEO_Admin_Page {
                             </th>
                             <td>
                                 <select id="primary_provider" name="primary_provider">
-                                    <option value="openai" <?php selected(isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai', 'openai'); ?>>
-                                        OpenAI
+                                    <option value="openai" <?php selected($mfseo_settings_main_ai, 'openai'); ?>>
+                                        <?php esc_html_e('OpenAI', 'mindfulseo'); ?>
                                     </option>
-                                    <option value="claude" <?php selected(isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai', 'claude'); ?>>
-                                        Claude
+                                    <option value="claude" <?php selected($mfseo_settings_main_ai, 'claude'); ?>>
+                                        <?php esc_html_e('Claude', 'mindfulseo'); ?>
+                                    </option>
+                                    <option value="openrouter" <?php selected($mfseo_settings_main_ai, 'openrouter'); ?>>
+                                        <?php esc_html_e('OpenRouter', 'mindfulseo'); ?>
                                     </option>
                                 </select>
-                                <p class="description"><?php _e('Primary provider for AI operations', 'mindfulseo'); ?></p>
+                                <p class="description mfseo-primary-desc-direct"><?php esc_html_e('Choose how AI requests run: OpenAI or Claude (direct vendor APIs), or OpenRouter (one key; pick models below).', 'mindfulseo'); ?></p>
+                                <p class="description mfseo-primary-desc-or" style="display:none;"><?php esc_html_e('OpenRouter is primary. If it fails, the direct option selected above (OpenAI vs Claude) is tried first—requires that key in the optional fallback section.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
+                            <th scope="row"><label for="openrouter_model"><?php _e('OpenRouter model', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <select id="openrouter_model" name="openrouter_model">
+                                    <option value="qwen/qwen3.5-flash-02-23" <?php selected(isset($settings['openrouter_model']) ? $settings['openrouter_model'] : '', 'qwen/qwen3.5-flash-02-23'); ?>>Qwen 3.5 Flash</option>
+                                    <option value="qwen/qwen3.5-35b-a3b" <?php selected(isset($settings['openrouter_model']) ? $settings['openrouter_model'] : '', 'qwen/qwen3.5-35b-a3b'); ?>>Qwen 3.5 35B A3B</option>
+                                    <option value="minimax/minimax-m2.5" <?php selected(isset($settings['openrouter_model']) ? $settings['openrouter_model'] : '', 'minimax/minimax-m2.5'); ?>>MiniMax M2.5</option>
+                                    <option value="minimax/minimax-m2" <?php selected(isset($settings['openrouter_model']) ? $settings['openrouter_model'] : '', 'minimax/minimax-m2'); ?>>MiniMax M2</option>
+                                </select>
+                                <p class="description"><?php _e('Main model for full prompts (unless custom id is set).', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
+                            <th scope="row"><label for="openrouter_model_fast"><?php _e('OpenRouter fast model', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <select id="openrouter_model_fast" name="openrouter_model_fast">
+                                    <option value="qwen/qwen3.5-flash-02-23" <?php selected(isset($settings['openrouter_model_fast']) ? $settings['openrouter_model_fast'] : '', 'qwen/qwen3.5-flash-02-23'); ?>>Qwen 3.5 Flash</option>
+                                    <option value="minimax/minimax-m2.5" <?php selected(isset($settings['openrouter_model_fast']) ? $settings['openrouter_model_fast'] : '', 'minimax/minimax-m2.5'); ?>>MiniMax M2.5</option>
+                                    <option value="minimax/minimax-m2" <?php selected(isset($settings['openrouter_model_fast']) ? $settings['openrouter_model_fast'] : '', 'minimax/minimax-m2'); ?>>MiniMax M2</option>
+                                </select>
+                                <p class="description"><?php _e('Used for lighter / fast requests. Connection test uses this model.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
+                            <th scope="row"><label for="openrouter_custom_model"><?php _e('Custom model id', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <input type="text" class="large-text" id="openrouter_custom_model" name="openrouter_custom_model"
+                                       value="<?php echo esc_attr(isset($settings['openrouter_custom_model']) ? $settings['openrouter_custom_model'] : ''); ?>"
+                                       placeholder="e.g. minimax/minimax-m2.7">
+                                <p class="description"><?php _e('If set, overrides the main preset for non-fast requests. Verify ids on openrouter.ai/models.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-or-fallback-prefer">
+                            <th scope="row"><label for="mfseo_fallback_direct_priority"><?php _e('If OpenRouter fails, try first', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <select id="mfseo_fallback_direct_priority" name="mfseo_fallback_direct_priority">
+                                    <option value="openai" <?php selected(isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai', 'openai'); ?>><?php esc_html_e('OpenAI', 'mindfulseo'); ?></option>
+                                    <option value="claude" <?php selected(isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai', 'claude'); ?>><?php esc_html_e('Claude', 'mindfulseo'); ?></option>
+                                </select>
+                                <p class="description"><?php _e('Requires the matching API key in the optional fallback block under AI Provider Settings.', 'mindfulseo'); ?></p>
                             </td>
                         </tr>
                     
@@ -1002,7 +1114,8 @@ class MFSEO_Admin_Page {
                                            name="enable_fallback" 
                                            value="1" 
                                            <?php checked(isset($settings['enable_fallback']) ? $settings['enable_fallback'] : true, true); ?>>
-                                    <?php _e('Automatically use secondary provider if primary fails', 'mindfulseo'); ?>
+                                    <span class="mfseo-fallback-desc-direct"><?php _e('Automatically use secondary provider if primary fails', 'mindfulseo'); ?></span>
+                                    <span class="mfseo-fallback-desc-or" style="display:none;"><?php _e('Automatically try the other direct API if OpenRouter fails', 'mindfulseo'); ?></span>
                                 </label>
                             </td>
                         </tr>
@@ -1079,9 +1192,12 @@ class MFSEO_Admin_Page {
     private function render_usage_tab() {
         $logger = class_exists('MFSEO_Logger') ? MFSEO_Logger::get_instance() : null;
         $range  = isset($_GET['usage_range']) && in_array($_GET['usage_range'], array('today','week','month','all')) ? $_GET['usage_range'] : 'month';
+        $include_conn_tests = isset($_GET['usage_tests']) && $_GET['usage_tests'] === '1';
+        $exclude_tests = ! $include_conn_tests;
 
-        $stats = $logger ? $logger->get_api_stats($range) : array();
-        $trend = $logger ? $logger->get_api_daily_trend($range) : array();
+        $stats = $logger ? $logger->get_api_stats($range, $exclude_tests) : array();
+        $trend = $logger ? $logger->get_api_daily_trend($range, $exclude_tests) : array();
+        $by_model = $logger ? $logger->get_api_stats_by_model($range, $exclude_tests) : array();
         $recent_api = $logger ? $logger->get_recent_logs(35, 'api_call') : array();
 
         // Find the earliest logged API call to warn about historical gap
@@ -1108,11 +1224,27 @@ class MFSEO_Admin_Page {
             <div style="display:flex;align-items:center;gap:10px;margin:16px 0 20px;">
                 <strong style="font-size:13px;"><?php _e('Date Range:', 'mindfulseo'); ?></strong>
                 <?php foreach ($range_labels as $key => $label) : ?>
-                    <a href="<?php echo esc_url(add_query_arg('usage_range', $key, $settings_url)); ?>"
+                    <?php
+                    $range_href = add_query_arg('usage_range', $key, $settings_url);
+                    if ($include_conn_tests) {
+                        $range_href = add_query_arg('usage_tests', '1', $range_href);
+                    }
+                    ?>
+                    <a href="<?php echo esc_url($range_href); ?>"
                        class="button <?php echo $range === $key ? 'button-primary' : ''; ?>" style="text-decoration:none;">
                         <?php echo esc_html($label); ?>
                     </a>
                 <?php endforeach; ?>
+                <span style="margin-left:12px;font-size:13px;">
+                    <?php
+                    $tests_on = $include_conn_tests;
+                    $usage_base = remove_query_arg(array('usage_tests'), add_query_arg('usage_range', $range, $settings_url));
+                    $tests_url = add_query_arg('usage_tests', $tests_on ? '0' : '1', $usage_base);
+                    ?>
+                    <a href="<?php echo esc_url($tests_url); ?>" class="button<?php echo $tests_on ? ' button-primary' : ''; ?>" style="text-decoration:none;">
+                        <?php echo $tests_on ? esc_html__('Hide connection tests in totals', 'mindfulseo') : esc_html__('Include connection tests in totals', 'mindfulseo'); ?>
+                    </a>
+                </span>
             </div>
 
             <?php if ( $earliest_log ) : ?>
@@ -1145,7 +1277,7 @@ class MFSEO_Admin_Page {
                 <div class="mfseo-health-card mfseo-health-card--warning">
                     <div class="mfseo-health-card__count">$<?php echo number_format(max(0,$ai_cost),2); ?></div>
                     <div class="mfseo-health-card__label"><?php _e('AI Cost (est.)', 'mindfulseo'); ?></div>
-                    <div class="mfseo-health-card__of"><?php _e('OpenAI + Claude', 'mindfulseo'); ?></div>
+                    <div class="mfseo-health-card__of"><?php _e('OpenAI + Claude + OpenRouter (est.)', 'mindfulseo'); ?></div>
                 </div>
                 <div class="mfseo-health-card mfseo-health-card--warning">
                     <div class="mfseo-health-card__count">$<?php echo number_format(isset($dfs_data['cost']) ? $dfs_data['cost'] : 0, 3); ?></div>
@@ -1157,7 +1289,7 @@ class MFSEO_Admin_Page {
             <div class="mfseo-usage-transparency" style="background:#f6f7f7;border:1px solid #c3c4c7;border-radius:6px;padding:14px 18px;margin-bottom:20px;font-size:13px;line-height:1.65;">
                 <p style="margin:0 0 10px;"><strong><?php esc_html_e( 'Cost transparency', 'mindfulseo' ); ?></strong></p>
                 <ul style="margin:0 0 0 18px;padding:0;">
-                    <li><?php esc_html_e( 'Every successful OpenAI or Claude request that returns usage data is logged with tokens and an estimated USD cost. DataForSEO calls are logged separately.', 'mindfulseo' ); ?></li>
+                    <li><?php esc_html_e( 'Successful OpenAI, Claude, and OpenRouter chat calls are logged with tokens and an estimated USD cost (OpenRouter rates are approximate). Rows without token usage from the API are still logged with a usage_missing flag. DataForSEO calls are logged separately.', 'mindfulseo' ); ?></li>
                     <li><?php esc_html_e( 'The “Model / context” column shows the model and which feature ran (for example batch_optimizer, content_analyzer_keywords, or keyword_strategy_ai_cleanup).', 'mindfulseo' ); ?></li>
                     <li><?php esc_html_e( 'If the primary provider fails and the plugin tries the other provider once, you are normally only charged for the successful call; failures are not stored as paid rows.', 'mindfulseo' ); ?></li>
                     <li><?php esc_html_e( 'There is no scheduled background AI job: the monthly cron only refreshes DataForSEO keyword metrics when that option is enabled—not OpenAI or Claude.', 'mindfulseo' ); ?></li>
@@ -1196,6 +1328,36 @@ class MFSEO_Admin_Page {
                 <p style="margin:10px 0 0;font-size:12px;color:#787c82;">
                     <?php _e('AI costs are estimated from published per-token rates. DataForSEO costs are estimated from published per-call credit rates. Always verify against your actual provider invoices.', 'mindfulseo'); ?>
                 </p>
+            </div>
+            <?php endif; ?>
+
+            <?php if (!empty($by_model)) : ?>
+            <div style="background:#fff;border:1px solid #c3c4c7;border-radius:6px;padding:20px;margin-bottom:20px;">
+                <h3 style="margin:0 0 16px;font-size:14px;"><?php _e('AI usage by model', 'mindfulseo'); ?></h3>
+                <table class="widefat striped" style="font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th><?php _e('Provider', 'mindfulseo'); ?></th>
+                            <th><?php _e('Model', 'mindfulseo'); ?></th>
+                            <th><?php _e('Calls', 'mindfulseo'); ?></th>
+                            <th><?php _e('In', 'mindfulseo'); ?></th>
+                            <th><?php _e('Out', 'mindfulseo'); ?></th>
+                            <th><?php _e('Est. cost', 'mindfulseo'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($by_model as $bm) : ?>
+                        <tr>
+                            <td><?php echo esc_html($bm['ai_provider']); ?></td>
+                            <td style="max-width:220px;word-break:break-word;"><?php echo esc_html($bm['model_slug']); ?></td>
+                            <td><?php echo number_format((int) $bm['calls']); ?></td>
+                            <td><?php echo number_format((int) $bm['prompt_tokens']); ?></td>
+                            <td><?php echo number_format((int) $bm['completion_tokens']); ?></td>
+                            <td><strong>$<?php echo number_format((float) $bm['cost'], 2); ?></strong></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
             </div>
             <?php endif; ?>
 
@@ -1244,10 +1406,13 @@ class MFSEO_Admin_Page {
                             <tr>
                                 <th><?php esc_html_e( 'When', 'mindfulseo' ); ?></th>
                                 <th><?php esc_html_e( 'Provider', 'mindfulseo' ); ?></th>
+                                <th><?php esc_html_e( 'Model', 'mindfulseo' ); ?></th>
+                                <th><?php esc_html_e( 'Context', 'mindfulseo' ); ?></th>
+                                <th><?php esc_html_e( 'Kind', 'mindfulseo' ); ?></th>
                                 <th><?php esc_html_e( 'In', 'mindfulseo' ); ?></th>
                                 <th><?php esc_html_e( 'Out', 'mindfulseo' ); ?></th>
                                 <th><?php esc_html_e( 'Est. $', 'mindfulseo' ); ?></th>
-                                <th><?php esc_html_e( 'Model / context', 'mindfulseo' ); ?></th>
+                                <th><?php esc_html_e( 'Notes', 'mindfulseo' ); ?></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1255,10 +1420,13 @@ class MFSEO_Admin_Page {
                             <tr>
                                 <td><?php echo esc_html( $log->created_at ); ?></td>
                                 <td><?php echo esc_html( $log->ai_provider ); ?></td>
+                                <td style="max-width:140px;word-break:break-word;"><?php echo esc_html( isset( $log->ai_model ) && $log->ai_model !== '' && $log->ai_model !== null ? $log->ai_model : '—' ); ?></td>
+                                <td style="max-width:120px;word-break:break-word;"><?php echo esc_html( isset( $log->usage_context ) && $log->usage_context !== '' && $log->usage_context !== null ? $log->usage_context : '—' ); ?></td>
+                                <td><?php echo esc_html( isset( $log->api_call_kind ) && $log->api_call_kind !== '' ? $log->api_call_kind : 'production' ); ?></td>
                                 <td><?php echo number_format( (int) $log->prompt_tokens ); ?></td>
                                 <td><?php echo number_format( (int) $log->completion_tokens ); ?></td>
                                 <td><strong>$<?php echo esc_html( number_format( (float) $log->cost, 4 ) ); ?></strong></td>
-                                <td style="max-width:280px;word-break:break-word;"><?php echo esc_html( $log->message ); ?></td>
+                                <td style="max-width:200px;word-break:break-word;"><?php echo esc_html( $log->message ); ?></td>
                             </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -1300,7 +1468,14 @@ class MFSEO_Admin_Page {
                 add_settings_error('mindfulseo_keywords', 'import_error', 'Upload failed: ' . $err_msg, 'error');
             } else {
                 error_log('MindfulSEO CSV Import: Starting import of ' . $_FILES['keyword_csv']['name'] . ' (' . $_FILES['keyword_csv']['size'] . ' bytes)');
-                $result = $keyword_manager->import_csv($_FILES['keyword_csv']);
+                // Merge duplicate primary+longtail so your CSV wins over existing AI rows (same behavior as setup wizard).
+                $result = $keyword_manager->import_csv(
+                    $_FILES['keyword_csv'],
+                    array(
+                        'wizard_merge' => true,
+                        'csv_source'   => sanitize_file_name( $_FILES['keyword_csv']['name'] ),
+                    )
+                );
                 
                 if (is_wp_error($result)) {
                     error_log('MindfulSEO CSV Import Error: ' . $result->get_error_message());
@@ -1311,11 +1486,14 @@ class MFSEO_Admin_Page {
                         'error'
                     );
                 } else {
-                    error_log('MindfulSEO CSV Import Success: ' . $result['imported'] . ' imported, ' . $result['skipped'] . ' skipped');
+                    $updated = isset( $result['updated'] ) ? (int) $result['updated'] : 0;
+                    error_log( 'MindfulSEO CSV Import Success: ' . $result['imported'] . ' new, ' . $updated . ' updated, ' . $result['skipped'] . ' skipped' );
                     $msg = sprintf(
-                        __('Successfully imported %d keywords (%d skipped as duplicates)', 'mindfulseo'),
-                        $result['imported'],
-                        $result['skipped']
+                        /* translators: 1: new rows, 2: updated rows, 3: skipped */
+                        __( 'Keyword CSV: %1$d new rows, %2$d existing rows updated from your file, %3$d skipped (empty or invalid rows).', 'mindfulseo' ),
+                        (int) $result['imported'],
+                        $updated,
+                        (int) $result['skipped']
                     );
                     if (!empty($result['errors'])) {
                         $msg .= '. Database errors: ' . implode('; ', array_slice($result['errors'], 0, 3));
@@ -1478,23 +1656,50 @@ class MFSEO_Admin_Page {
             }
         }
         
-        // Get keywords
-        $keywords = array();
-        $stats = array();
+        // Get keywords — preserve HIGH → MEDIUM → LOW; do not sort A–Z only (that hid CSV/import priority).
+        $keywords         = array();
+        $stats            = array();
+        $keyword_groups   = array();
+        $kw_priority_rank = function ( $p ) {
+            $p = strtoupper( (string) $p );
+            if ( 'HIGH' === $p ) {
+                return 0;
+            }
+            if ( 'LOW' === $p ) {
+                return 2;
+            }
+            return 1;
+        };
         if ($keyword_manager) {
-            $keywords = $keyword_manager->get_keywords(array('limit' => 999999)); // Get ALL keywords
+            $keywords = $keyword_manager->get_keywords(
+                array(
+                    'limit'   => 999999,
+                    'orderby' => 'priority',
+                    'order'   => 'ASC',
+                )
+            );
             $stats = $keyword_manager->get_statistics();
-            
-            // Sort keywords alphabetically by primary keyword
+
             if (!empty($keywords)) {
-                usort($keywords, function($a, $b) {
-                    return strcasecmp($a->primary_keyword, $b->primary_keyword);
-                });
+                usort(
+                    $keywords,
+                    function ( $a, $b ) use ( $kw_priority_rank ) {
+                        $pa = $kw_priority_rank( $a->priority );
+                        $pb = $kw_priority_rank( $b->priority );
+                        if ( $pa !== $pb ) {
+                            return $pa - $pb;
+                        }
+                        $c = strcasecmp( $a->primary_keyword, $b->primary_keyword );
+                        if ( 0 !== $c ) {
+                            return $c;
+                        }
+                        return strcasecmp( $a->longtail_keyword, $b->longtail_keyword );
+                    }
+                );
             }
         }
 
         // Group keywords by primary keyword for the collapsible table
-        $keyword_groups = array();
         foreach ($keywords as $kw) {
             $gkey = strtolower(trim($kw->primary_keyword));
             if (!isset($keyword_groups[$gkey])) {
@@ -1505,6 +1710,38 @@ class MFSEO_Admin_Page {
             }
             $keyword_groups[$gkey]['rows'][] = $kw;
         }
+        foreach ( $keyword_groups as &$mfseo_kw_grp ) {
+            usort(
+                $mfseo_kw_grp['rows'],
+                function ( $a, $b ) use ( $kw_priority_rank ) {
+                    $pa = $kw_priority_rank( $a->priority );
+                    $pb = $kw_priority_rank( $b->priority );
+                    if ( $pa !== $pb ) {
+                        return $pa - $pb;
+                    }
+                    return strcasecmp( $a->longtail_keyword, $b->longtail_keyword );
+                }
+            );
+        }
+        unset( $mfseo_kw_grp );
+        uasort(
+            $keyword_groups,
+            function ( $a, $b ) use ( $kw_priority_rank ) {
+                $min_rank = function ( $rows ) use ( $kw_priority_rank ) {
+                    $m = 99;
+                    foreach ( $rows as $r ) {
+                        $m = min( $m, $kw_priority_rank( $r->priority ) );
+                    }
+                    return $m;
+                };
+                $ra = $min_rank( $a['rows'] );
+                $rb = $min_rank( $b['rows'] );
+                if ( $ra !== $rb ) {
+                    return $ra - $rb;
+                }
+                return strcasecmp( $a['name'], $b['name'] );
+            }
+        );
         $primary_metrics = get_option('mindfulseo_primary_metrics', array());
         
         // Get active tab
@@ -1875,14 +2112,26 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                     <p><?php _e('No keywords found. Upload a CSV file to get started.', 'mindfulseo'); ?></p>
                 <?php else: ?>
                     <div class="mfseo-keyword-table-wrap">
+                    <?php if (!empty($keywords) && isset($stats['total'])): ?>
+                        <div style="margin-bottom: 15px; padding: 10px; background: #f0f0f1; border-radius: 4px;">
+                            <strong><?php printf(__('Showing %d keywords in %d groups', 'mindfulseo'), count($keywords), count($keyword_groups)); ?></strong>
+                            <span style="color: #666; margin-left: 10px;">
+                                <?php _e('Click any cell to edit inline. Click ▶ to expand longtails.', 'mindfulseo'); ?>
+                            </span>
+                        </div>
+                    <?php endif; ?>
                     <table class="wp-list-table widefat fixed striped mfseo-keyword-table">
                         <thead>
                             <tr>
-                                <th style="width: 22%; cursor: pointer;" class="sortable" data-sort="primary_keyword">
+                                <th style="width: 20%; cursor: pointer;" class="sortable" data-sort="primary_keyword">
                                     <?php _e('Keyword', 'mindfulseo'); ?> 
                                     <span class="dashicons dashicons-sort" style="font-size: 14px; vertical-align: middle;"></span>
                                 </th>
-                                <th style="width: 21%; cursor: pointer;" class="sortable" data-sort="longtail_keyword">
+                                <th style="width: 7%; cursor: pointer;" class="sortable sorted-asc" data-sort="priority">
+                                    <?php _e('Priority', 'mindfulseo'); ?>
+                                    <span class="dashicons dashicons-sort dashicons-arrow-up" style="font-size: 14px; vertical-align: middle;"></span>
+                                </th>
+                                <th style="width: 19%; cursor: pointer;" class="sortable" data-sort="longtail_keyword">
                                     <?php _e('Longtails', 'mindfulseo'); ?>
                                     <span class="dashicons dashicons-sort" style="font-size: 14px; vertical-align: middle;"></span>
                                 </th>
@@ -1900,10 +2149,6 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                                 </th>
                                 <th style="width: 12%; cursor: pointer;" class="sortable" data-sort="search_intent">
                                     <?php _e('Intent', 'mindfulseo'); ?>
-                                    <span class="dashicons dashicons-sort" style="font-size: 14px; vertical-align: middle;"></span>
-                                </th>
-                                <th style="width: 8%; cursor: pointer;" class="sortable" data-sort="priority">
-                                    <?php _e('Priority', 'mindfulseo'); ?>
                                     <span class="dashicons dashicons-sort" style="font-size: 14px; vertical-align: middle;"></span>
                                 </th>
                                 <th style="width: 11%;" class="mfseo-kw-col-actions"><?php _e('Actions', 'mindfulseo'); ?></th>
@@ -1944,6 +2189,13 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                                             data-group-ids="<?php echo esc_attr(implode(',', $all_ids)); ?>"
                                             data-original="<?php echo esc_attr($first->primary_keyword); ?>"><?php echo esc_html($first->primary_keyword); ?></span></strong>
                                     </td>
+                                    <td data-sort-value="<?php echo (int) $kw_priority_rank( $first->priority ); ?>">
+                                        <select class="editable-select" data-id="<?php echo $first->id; ?>" data-field="priority">
+                                            <option value="HIGH" <?php selected($first->priority, 'HIGH'); ?>>HIGH</option>
+                                            <option value="MEDIUM" <?php selected($first->priority, 'MEDIUM'); ?>>MEDIUM</option>
+                                            <option value="LOW" <?php selected($first->priority, 'LOW'); ?>>LOW</option>
+                                        </select>
+                                    </td>
                                     <td>
                                         <?php if ($has_toggle): ?>
                                             <span class="mfseo-lt-count"><?php echo $lt_count; ?> longtail<?php echo $lt_count !== 1 ? 's' : ''; ?></span>
@@ -1981,13 +2233,6 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                                             <option value="Commercial" <?php selected($first->search_intent, 'Commercial'); ?>>Commercial</option>
                                         </select>
                                     </td>
-                                    <td>
-                                        <select class="editable-select" data-id="<?php echo $first->id; ?>" data-field="priority">
-                                            <option value="HIGH" <?php selected($first->priority, 'HIGH'); ?>>HIGH</option>
-                                            <option value="MEDIUM" <?php selected($first->priority, 'MEDIUM'); ?>>MEDIUM</option>
-                                            <option value="LOW" <?php selected($first->priority, 'LOW'); ?>>LOW</option>
-                                        </select>
-                                    </td>
                                     <td class="mfseo-kw-col-actions">
                                         <form method="post" style="display: inline;">
                                             <?php wp_nonce_field('mindfulseo_delete_keyword', 'mindfulseo_delete_nonce'); ?>
@@ -2020,6 +2265,13 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                                             data-field="longtail_keyword"
                                             data-original="<?php echo esc_attr($lt_row->longtail_keyword); ?>"><?php echo esc_html($lt_row->longtail_keyword); ?></span>
                                     </td>
+                                    <td data-sort-value="<?php echo (int) $kw_priority_rank( $lt_row->priority ); ?>">
+                                        <select class="editable-select" data-id="<?php echo $lt_row->id; ?>" data-field="priority">
+                                            <option value="HIGH" <?php selected($lt_row->priority, 'HIGH'); ?>>HIGH</option>
+                                            <option value="MEDIUM" <?php selected($lt_row->priority, 'MEDIUM'); ?>>MEDIUM</option>
+                                            <option value="LOW" <?php selected($lt_row->priority, 'LOW'); ?>>LOW</option>
+                                        </select>
+                                    </td>
                                     <td></td>
                                     <td style="text-align: center;" data-sort-value="<?php echo isset($lt_row->search_volume) && $lt_row->search_volume !== null ? intval($lt_row->search_volume) : -1; ?>">
                                         <?php if (isset($lt_row->search_volume) && $lt_row->search_volume !== null): ?>
@@ -2051,13 +2303,6 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                                             <option value="Commercial" <?php selected($lt_row->search_intent, 'Commercial'); ?>>Commercial</option>
                                         </select>
                                     </td>
-                                    <td>
-                                        <select class="editable-select" data-id="<?php echo $lt_row->id; ?>" data-field="priority">
-                                            <option value="HIGH" <?php selected($lt_row->priority, 'HIGH'); ?>>HIGH</option>
-                                            <option value="MEDIUM" <?php selected($lt_row->priority, 'MEDIUM'); ?>>MEDIUM</option>
-                                            <option value="LOW" <?php selected($lt_row->priority, 'LOW'); ?>>LOW</option>
-                                        </select>
-                                    </td>
                                     <td class="mfseo-kw-col-actions">
                                         <form method="post" style="display: inline;">
                                             <?php wp_nonce_field('mindfulseo_delete_keyword', 'mindfulseo_delete_nonce'); ?>
@@ -2075,15 +2320,6 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                         </tbody>
                     </table>
                     </div>
-                    
-                    <?php if (!empty($keywords) && isset($stats['total'])): ?>
-                        <div style="margin-top: 15px; padding: 10px; background: #f0f0f1; border-radius: 4px;">
-                            <strong><?php printf(__('Showing %d keywords in %d groups', 'mindfulseo'), count($keywords), count($keyword_groups)); ?></strong>
-                            <span style="color: #666; margin-left: 10px;">
-                                <?php _e('Click any cell to edit inline. Click ▶ to expand longtails.', 'mindfulseo'); ?>
-                            </span>
-                        </div>
-                    <?php endif; ?>
                 <?php endif; ?>
             </div>
             
@@ -2257,10 +2493,17 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
             } else {
                 $analyzer = new MFSEO_Content_Analyzer();
                 $deep_analysis = !empty($_POST['deep_analysis']);
+                $manual_gl = $guidelines_engine->get_editor_policy_snapshot_text();
+                $wizard_gl_payload = '';
+                if ($manual_gl !== '') {
+                    $wizard_gl_payload = "=== USER-DEFINED AND IMPORTED RULES (authoritative — never contradict; extend with complementary rules only) ===\n" . $manual_gl;
+                }
                 $suggestions = $analyzer->analyze_for_guidelines(array(
                     'post_types' => $post_types,
                     'limit' => $limit,
                     'deep_analysis' => $deep_analysis,
+                    'wizard_guidelines_snapshot' => $wizard_gl_payload,
+                    'ai_usage_context' => 'guidelines_page_autogenerate',
                 ));
                 
                 if (empty($suggestions)) {
@@ -2272,25 +2515,17 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                     );
                 } else {
                     $imported = 0;
-                    
-                    // Pattern-based capitalize rules (always used as supplementary)
-                    if (!empty($suggestions['capitalize_terms'])) {
-                        foreach ($suggestions['capitalize_terms'] as $term) {
-                            $result = $guidelines_engine->add_rule(array(
-                                'rule_type' => 'capitalize',
-                                'avoid_term' => strtolower($term),
-                                'preferred_term' => $term,
-                                'context' => 'Auto-generated from content analysis',
-                                'guideline_source' => 'Auto-generated',
-                                'active' => true
-                            ));
-                            if (!is_wp_error($result)) {
-                                $imported++;
+
+                    $ai_cap_lower = array();
+                    if (!empty($suggestions['ai_guidelines'])) {
+                        foreach ($suggestions['ai_guidelines'] as $ar) {
+                            if (isset($ar['type']) && $ar['type'] === 'capitalize' && !empty($ar['preferred'])) {
+                                $ai_cap_lower[strtolower($ar['preferred'])] = true;
                             }
                         }
                     }
-                    
-                    // AI-generated guidelines (all types)
+
+                    // AI-generated guidelines first (all types)
                     if (!empty($suggestions['ai_guidelines'])) {
                         foreach ($suggestions['ai_guidelines'] as $ai_rule) {
                             $rule_type = $ai_rule['type'];
@@ -2312,6 +2547,34 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
                             ));
                             if (!is_wp_error($result)) {
                                 $imported++;
+                            }
+                        }
+                    }
+
+                    // Pattern-based capitalize: capped; after AI; dedupe AI capitalize
+                    if (!empty($suggestions['capitalize_terms'])) {
+                        $ai_ok = !empty($suggestions['ai_succeeded']);
+                        $max_pat = $ai_ok ? 10 : 28;
+                        $added_pat = 0;
+                        foreach ($suggestions['capitalize_terms'] as $term) {
+                            if ($added_pat >= $max_pat) {
+                                break;
+                            }
+                            $low = strtolower($term);
+                            if ($ai_ok && isset($ai_cap_lower[$low])) {
+                                continue;
+                            }
+                            $result = $guidelines_engine->add_rule(array(
+                                'rule_type' => 'capitalize',
+                                'avoid_term' => $low,
+                                'preferred_term' => $term,
+                                'context' => 'Auto-generated from content analysis',
+                                'guideline_source' => 'Auto-generated',
+                                'active' => true
+                            ));
+                            if (!is_wp_error($result)) {
+                                $imported++;
+                                $added_pat++;
                             }
                         }
                     }
@@ -2509,6 +2772,36 @@ web design,responsive web design examples,Informational,HIGH,3200,Showcase portf
         if ($guidelines_engine) {
             $rules = $guidelines_engine->get_all_rules(array('active_only' => false));
             $stats = $guidelines_engine->get_statistics();
+            $mfseo_gl_src_rank = function ($src) {
+                $s = (string) $src;
+                if ($s === '') {
+                    return 3;
+                }
+                if (strpos($s, 'Wizard Import') === 0 || $s === 'CSV Import' || $s === 'manual' || $s === 'Manual') {
+                    return 0;
+                }
+                if ($s === 'AI-generated' || $s === 'Auto-generated') {
+                    return 2;
+                }
+                return 1;
+            };
+            usort(
+                $rules,
+                function ($a, $b) use ($mfseo_gl_src_rank) {
+                    $ra = $mfseo_gl_src_rank(isset($a->guideline_source) ? $a->guideline_source : '');
+                    $rb = $mfseo_gl_src_rank(isset($b->guideline_source) ? $b->guideline_source : '');
+                    if ($ra !== $rb) {
+                        return $ra - $rb;
+                    }
+                    $ca = isset($a->rule_type) ? $a->rule_type : '';
+                    $cb = isset($b->rule_type) ? $b->rule_type : '';
+                    $cmp = strcmp($ca, $cb);
+                    if (0 !== $cmp) {
+                        return $cmp;
+                    }
+                    return (int) $a->id - (int) $b->id;
+                }
+            );
         }
         
         // Get active tab
@@ -2908,7 +3201,7 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
                                         data-id="<?php echo $rule->id; ?>" 
                                         data-field="context" 
                                         data-original="<?php echo esc_attr($rule->context); ?>"><?php echo esc_html($rule->context); ?></span></small></td>
-                                    <td><small><?php echo esc_html(substr($rule->guideline_source, 0, 20)); ?></small></td>
+                                    <td><small title="<?php echo esc_attr($rule->guideline_source); ?>"><?php echo esc_html($rule->guideline_source); ?></small></td>
                                     <td>
                                         <?php if ($rule->active): ?>
                                             <span style="color: #46b450;">● <?php _e('Active', 'mindfulseo'); ?></span>
@@ -3013,6 +3306,15 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
                 $settings['claude_api_key'] = sanitize_text_field($_POST['claude_api_key']);
             }
         }
+
+        if (isset($_POST['openrouter_api_key']) && $_POST['openrouter_api_key'] !== '••••••••••••••••') {
+            if (class_exists('MFSEO_AI_Connector')) {
+                $connector = MFSEO_AI_Connector::get_instance();
+                $settings['openrouter_api_key'] = $connector->encrypt_api_key(sanitize_text_field($_POST['openrouter_api_key']));
+            } else {
+                $settings['openrouter_api_key'] = sanitize_text_field($_POST['openrouter_api_key']);
+            }
+        }
         
         // Update DataForSEO credentials (only if not masked)
         if (isset($_POST['dataforseo_login']) && $_POST['dataforseo_login'] !== '••••••••••••••••') {
@@ -3029,9 +3331,36 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
         }
         
         // Update other settings
+        $posted_main_ai = isset($_POST['primary_provider']) ? sanitize_text_field(wp_unslash($_POST['primary_provider'])) : '';
+        if ($posted_main_ai === 'openrouter') {
+            $settings['ai_backend'] = 'openrouter';
+            if (isset($_POST['mfseo_fallback_direct_priority'])) {
+                $fd = sanitize_text_field(wp_unslash($_POST['mfseo_fallback_direct_priority']));
+                if (in_array($fd, array('openai', 'claude'), true)) {
+                    $settings['primary_provider'] = $fd;
+                }
+            } elseif (empty($settings['primary_provider']) || ! in_array($settings['primary_provider'], array('openai', 'claude'), true)) {
+                $settings['primary_provider'] = 'openai';
+            }
+        } elseif ($posted_main_ai === 'openai' || $posted_main_ai === 'claude') {
+            $settings['ai_backend'] = 'direct';
+            $settings['primary_provider'] = $posted_main_ai;
+        } else {
+            $settings['ai_backend'] = isset($_POST['ai_backend']) && $_POST['ai_backend'] === 'openrouter' ? 'openrouter' : 'direct';
+            $fallback_pp = isset($_POST['primary_provider']) ? sanitize_text_field(wp_unslash($_POST['primary_provider'])) : 'openai';
+            $settings['primary_provider'] = in_array($fallback_pp, array('openai', 'claude'), true) ? $fallback_pp : 'openai';
+        }
+        /* Direct mode: connector keys off primary_provider; keep ai_provider identical for wizard + Settings consistency. */
+        if ( isset( $settings['ai_backend'] ) && $settings['ai_backend'] === 'direct'
+            && isset( $settings['primary_provider'] ) && in_array( $settings['primary_provider'], array( 'openai', 'claude' ), true ) ) {
+            $settings['ai_provider'] = $settings['primary_provider'];
+        }
+        $settings['openrouter_model'] = isset($_POST['openrouter_model']) ? sanitize_text_field($_POST['openrouter_model']) : 'qwen/qwen3.5-flash-02-23';
+        $settings['openrouter_model_fast'] = isset($_POST['openrouter_model_fast']) ? sanitize_text_field($_POST['openrouter_model_fast']) : 'minimax/minimax-m2.5';
+        $settings['openrouter_custom_model'] = isset($_POST['openrouter_custom_model']) ? sanitize_text_field(stripslashes($_POST['openrouter_custom_model'])) : '';
+        $settings['openrouter_http_referer'] = isset($_POST['openrouter_http_referer']) ? esc_url_raw($_POST['openrouter_http_referer']) : '';
         $settings['openai_model'] = isset($_POST['openai_model']) ? sanitize_text_field($_POST['openai_model']) : 'gpt-4-turbo';
         $settings['claude_model'] = isset($_POST['claude_model']) ? sanitize_text_field($_POST['claude_model']) : 'claude-sonnet-4-5';
-        $settings['primary_provider'] = isset($_POST['primary_provider']) ? sanitize_text_field($_POST['primary_provider']) : 'claude';
         $settings['enable_fallback'] = isset($_POST['enable_fallback']) ? true : false;
         $settings['require_approval'] = isset($_POST['require_approval']) ? true : false;
         $settings['batch_size'] = isset($_POST['batch_size']) ? absint($_POST['batch_size']) : 10;
@@ -3045,6 +3374,7 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
         delete_transient( 'mfseo_api_status_live' );
         delete_transient( 'mfseo_provider_down_openai' );
         delete_transient( 'mfseo_provider_down_claude' );
+        delete_transient( 'mfseo_provider_down_openrouter' );
 
         // Redirect back with success message
         wp_redirect(add_query_arg(array(
@@ -3799,13 +4129,16 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
                 var urlField = internal ? 'broken_url' : 'external_url';
                 var html = '<table class="widefat striped" style="margin-top:4px;"><thead><tr>';
                 html += '<th><?php echo esc_js( __( 'Post with broken link', 'mindfulseo' ) ); ?></th>';
+                html += '<th><?php echo esc_js( __( 'Link text', 'mindfulseo' ) ); ?></th>';
                 html += '<th>' + (internal ? '<?php echo esc_js( __( 'Broken internal URL', 'mindfulseo' ) ); ?>' : '<?php echo esc_js( __( 'Broken external URL', 'mindfulseo' ) ); ?>') + '</th>';
                 if (!internal) html += '<th style="width:130px;"><?php echo esc_js( __( 'Status', 'mindfulseo' ) ); ?></th>';
                 html += '<th style="width:70px;"><?php echo esc_js( __( 'Fix', 'mindfulseo' ) ); ?></th>';
                 html += '</tr></thead><tbody>';
                 $.each(items, function(i, row) {
                     var url = row[urlField] || '';
+                    var lt = (row.link_text && String(row.link_text).trim()) ? String(row.link_text).trim() : '—';
                     html += '<tr><td>' + esc(row.source_title) + '</td>';
+                    html += '<td style="max-width:220px;">' + esc(lt) + '</td>';
                     html += '<td><a href="' + esc(url) + '" target="_blank" style="word-break:break-all;">' + esc(url) + '</a></td>';
                     if (!internal) html += '<td>' + statusBadge(row.status_code) + '</td>';
                     html += '<td>' + (row.edit_url ? '<a href="' + esc(row.edit_url) + '" target="_blank" class="button button-small">Edit</a>' : '') + '</td>';
@@ -3989,13 +4322,17 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
             <table class="widefat striped">
                 <thead><tr>
                     <th><?php _e( 'Post with broken link', 'mindfulseo' ); ?></th>
+                    <th><?php _e( 'Link text', 'mindfulseo' ); ?></th>
                     <th><?php _e( 'Broken internal URL', 'mindfulseo' ); ?></th>
                     <th style="width:70px;"><?php _e( 'Fix', 'mindfulseo' ); ?></th>
                 </tr></thead>
                 <tbody>
-                <?php foreach ( $int_broken as $row ) : ?>
+                <?php foreach ( $int_broken as $row ) :
+                    $lt = ! empty( $row['link_text'] ) ? $row['link_text'] : '—';
+                ?>
                     <tr>
                         <td><?php echo esc_html( $row['source_title'] ); ?></td>
+                        <td style="max-width:220px;"><?php echo esc_html( $lt ); ?></td>
                         <td><a href="<?php echo esc_url( $row['broken_url'] ); ?>" target="_blank" style="word-break:break-all;"><?php echo esc_html( $row['broken_url'] ); ?></a></td>
                         <td><a href="<?php echo esc_url( get_edit_post_link( $row['source_id'] ) ); ?>" target="_blank" class="button button-small"><?php _e( 'Edit', 'mindfulseo' ); ?></a></td>
                     </tr>
@@ -4014,6 +4351,7 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
             <table class="widefat striped">
                 <thead><tr>
                     <th><?php _e( 'Post with broken link', 'mindfulseo' ); ?></th>
+                    <th><?php _e( 'Link text', 'mindfulseo' ); ?></th>
                     <th><?php _e( 'Broken external URL', 'mindfulseo' ); ?></th>
                     <th style="width:130px;"><?php _e( 'Status', 'mindfulseo' ); ?></th>
                     <th style="width:70px;"><?php _e( 'Fix', 'mindfulseo' ); ?></th>
@@ -4022,9 +4360,11 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
                 <?php foreach ( $ext_broken as $row ) :
                     $badge = $row['status_code'] === 0 ? 'Connection failed' : 'HTTP ' . $row['status_code'];
                     $color = ( $row['status_code'] === 404 || $row['status_code'] === 410 ) ? '#dc2626' : '#d97706';
+                    $lt    = ! empty( $row['link_text'] ) ? $row['link_text'] : '—';
                 ?>
                     <tr>
                         <td><?php echo esc_html( $row['source_title'] ); ?></td>
+                        <td style="max-width:220px;"><?php echo esc_html( $lt ); ?></td>
                         <td><a href="<?php echo esc_url( $row['external_url'] ); ?>" target="_blank" style="word-break:break-all;"><?php echo esc_html( $row['external_url'] ); ?></a></td>
                         <td><span style="background:<?php echo esc_attr( $color ); ?>;color:#fff;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:600;"><?php echo esc_html( $badge ); ?></span></td>
                         <td><a href="<?php echo esc_url( get_edit_post_link( $row['source_id'] ) ); ?>" target="_blank" class="button button-small"><?php _e( 'Edit', 'mindfulseo' ); ?></a></td>

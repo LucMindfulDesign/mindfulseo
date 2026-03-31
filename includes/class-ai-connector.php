@@ -69,11 +69,45 @@ class MFSEO_AI_Connector {
      */
     private function initialize_providers() {
         $settings = MindfulSEO::get_settings();
-        
-        $primary = isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai';
         $fallback_enabled = isset($settings['enable_fallback']) ? $settings['enable_fallback'] : true;
-        
-        // Initialize primary provider
+        $backend = isset($settings['ai_backend']) ? $settings['ai_backend'] : 'direct';
+
+        $this->primary_provider   = null;
+        $this->fallback_provider = null;
+
+        if ($backend === 'openrouter') {
+            $or_key = isset($settings['openrouter_api_key']) ? $this->decrypt_api_key($settings['openrouter_api_key']) : '';
+            if (!empty($or_key)) {
+                try {
+                    $this->primary_provider = $this->create_provider('openrouter');
+                } catch (Exception $e) {
+                    if ($this->logger) {
+                        $this->logger->log_error('Failed to initialize OpenRouter: ' . $e->getMessage());
+                    }
+                    error_log('MindfulSEO: Failed to initialize OpenRouter: ' . $e->getMessage());
+                }
+            }
+            if ($this->primary_provider && $fallback_enabled) {
+                $prefer = isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai';
+                $order = $prefer === 'openai' ? array('openai', 'claude') : array('claude', 'openai');
+                foreach ($order as $try) {
+                    try {
+                        $this->fallback_provider = $this->create_provider($try);
+                        break;
+                    } catch (Exception $e) {
+                        if ($this->logger) {
+                            $this->logger->log_error('Fallback ' . $try . ' unavailable: ' . $e->getMessage());
+                        }
+                    }
+                }
+            }
+            if ($this->primary_provider) {
+                return;
+            }
+        }
+
+        $primary = isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai';
+
         try {
             $this->primary_provider = $this->create_provider($primary);
         } catch (Exception $e) {
@@ -82,8 +116,7 @@ class MFSEO_AI_Connector {
             }
             error_log('MindfulSEO: Failed to initialize primary provider: ' . $e->getMessage());
         }
-        
-        // Initialize fallback provider if enabled
+
         if ($fallback_enabled) {
             $fallback = $primary === 'openai' ? 'claude' : 'openai';
             try {
@@ -96,7 +129,7 @@ class MFSEO_AI_Connector {
             }
         }
     }
-    
+
     /**
      * Create provider instance
      * 
@@ -121,7 +154,14 @@ class MFSEO_AI_Connector {
                     throw new Exception('Claude API key not configured');
                 }
                 return new MFSEO_Claude_Provider($api_key);
-                
+
+            case 'openrouter':
+                $api_key = isset($settings['openrouter_api_key']) ? $this->decrypt_api_key($settings['openrouter_api_key']) : '';
+                if (empty($api_key) || !class_exists('MFSEO_OpenRouter_Provider')) {
+                    throw new Exception('OpenRouter API key not configured');
+                }
+                return new MFSEO_OpenRouter_Provider($api_key);
+
             default:
                 throw new Exception('Unknown provider: ' . $provider_name);
         }
@@ -263,15 +303,28 @@ class MFSEO_AI_Connector {
         $prompt = mb_convert_encoding($prompt, 'UTF-8', 'UTF-8');
         $prompt = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $prompt);
         $prompt = $this->truncate_prompt_for_http( $prompt );
-        
+
         $settings = MindfulSEO::get_settings();
-        $primary = isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai';
-        $fallback = $primary === 'openai' ? 'claude' : 'openai';
-        
+        $backend = isset($settings['ai_backend']) ? $settings['ai_backend'] : 'direct';
         $use_fast = !empty($options['fast_model']);
 
-        // Circuit breaker: skip a provider that recently failed (avoids wasting
-        // seconds on a broken API key for every single post in a batch).
+        if ($backend === 'openrouter') {
+            $or_key = isset($settings['openrouter_api_key']) ? $this->decrypt_api_key($settings['openrouter_api_key']) : '';
+            if (!empty($or_key)) {
+                $or_breaker = 'mfseo_provider_down_openrouter';
+                if (!get_transient($or_breaker)) {
+                    $or_result = $this->generate_content_openrouter($prompt, $options, $settings, $use_fast);
+                    if (!is_wp_error($or_result)) {
+                        return $or_result;
+                    }
+                    set_transient($or_breaker, 1, 5 * MINUTE_IN_SECONDS);
+                }
+            }
+        }
+
+        $primary = isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai';
+        $fallback = $primary === 'openai' ? 'claude' : 'openai';
+
         $breaker_key = 'mfseo_provider_down_' . $primary;
         $primary_down = get_transient($breaker_key);
 
@@ -283,40 +336,38 @@ class MFSEO_AI_Connector {
             if (!is_wp_error($result)) {
                 return $result;
             }
-            // Fallback also failed — clear breaker and try primary as last resort
             delete_transient($breaker_key);
         }
-        
-        // Try primary provider
+
         $result = $this->generate_content_with_provider($primary, $prompt, $options, $settings, $use_fast);
-        
+
         if (!is_wp_error($result)) {
             return $result;
         }
-        
-        // Primary failed — mark it down for 5 minutes so subsequent calls skip it
+
         set_transient($breaker_key, 1, 5 * MINUTE_IN_SECONDS);
 
         $primary_error = $result->get_error_message();
         error_log('MindfulSEO: Primary provider (' . $primary . ') failed: ' . substr($primary_error, 0, 120) . ' — trying fallback (' . $fallback . ')');
-        
+
         if (empty($fallback_key)) {
             return $result;
         }
-        
+
         $fallback_result = $this->generate_content_with_provider($fallback, $prompt, $options, $settings, $use_fast);
-        
+
         if (!is_wp_error($fallback_result)) {
             error_log('MindfulSEO: Fallback provider (' . $fallback . ') succeeded');
             return $fallback_result;
         }
-        
+
         error_log('MindfulSEO: Fallback provider (' . $fallback . ') also failed: ' . $fallback_result->get_error_message());
         return new WP_Error('all_providers_failed', sprintf(
             'Primary (%s): %s | Fallback (%s): %s',
             $primary, $primary_error, $fallback, $fallback_result->get_error_message()
         ));
     }
+
     
     /**
      * Cap prompt size so JSON POST body stays under common HTTP/cURL limits (e.g. cURL error 100).
@@ -347,9 +398,11 @@ class MFSEO_AI_Connector {
         try {
             if ($provider === 'openai') {
                 return $this->generate_content_openai($prompt, $options, $settings, $use_fast);
-            } else {
-                return $this->generate_content_claude($prompt, $options, $settings, $use_fast);
             }
+            if ($provider === 'openrouter') {
+                return $this->generate_content_openrouter($prompt, $options, $settings, $use_fast);
+            }
+            return $this->generate_content_claude($prompt, $options, $settings, $use_fast);
         } catch (Exception $e) {
             return new WP_Error('exception', $e->getMessage());
         }
@@ -457,14 +510,113 @@ class MFSEO_AI_Connector {
         
         $usage_context = isset($options['usage_context']) ? (string) $options['usage_context'] : 'generate_content';
 
-        if (isset($body['usage']) && class_exists('MFSEO_Logger')) {
+        if (class_exists('MFSEO_Logger')) {
             $logger = MFSEO_Logger::get_instance();
-            $prompt_tokens = isset($body['usage']['prompt_tokens']) ? $body['usage']['prompt_tokens'] : 0;
-            $completion_tokens = isset($body['usage']['completion_tokens']) ? $body['usage']['completion_tokens'] : 0;
-            $cost = $this->estimate_openai_cost($model, $prompt_tokens, $completion_tokens);
-            $logger->log_api_call('openai', $prompt_tokens, $completion_tokens, $cost, $model, $usage_context);
+            $norm = isset($body['usage']) ? MFSEO_Logger::normalize_usage_tokens($body['usage']) : null;
+            if ($norm === null) {
+                $logger->log_api_call('openai', 0, 0, 0, $model, $usage_context, 'production', 'usage_missing');
+            } else {
+                $cost = $this->estimate_openai_cost($model, $norm['in'], $norm['out']);
+                $logger->log_api_call('openai', $norm['in'], $norm['out'], $cost, $model, $usage_context);
+            }
         }
-        
+
+        return $content;
+    }
+
+    /**
+     * Generate content via OpenRouter (OpenAI-compatible chat completions).
+     */
+    private function generate_content_openrouter($prompt, $options, $settings, $use_fast) {
+        $api_key = isset($settings['openrouter_api_key']) ? $this->decrypt_api_key($settings['openrouter_api_key']) : '';
+        if (empty($api_key)) {
+            return new WP_Error('no_api_key', 'OpenRouter API key not configured');
+        }
+
+        if ($use_fast) {
+            $model = isset($settings['openrouter_model_fast']) ? sanitize_text_field($settings['openrouter_model_fast']) : 'qwen/qwen3.5-flash-02-23';
+        } elseif (!empty($settings['openrouter_custom_model'])) {
+            $model = sanitize_text_field($settings['openrouter_custom_model']);
+        } else {
+            $model = isset($settings['openrouter_model']) ? sanitize_text_field($settings['openrouter_model']) : 'qwen/qwen3.5-flash-02-23';
+        }
+
+        $body = array(
+            'model' => $model,
+            'messages' => array(
+                array(
+                    'role' => 'user',
+                    'content' => $prompt,
+                ),
+            ),
+            'temperature' => isset($options['temperature']) ? round((float) $options['temperature'], 1) : 0.7,
+            'max_tokens' => isset($options['max_tokens']) ? (int) $options['max_tokens'] : 2000,
+        );
+
+        $referer = !empty($settings['openrouter_http_referer']) ? esc_url_raw($settings['openrouter_http_referer']) : home_url('/');
+        if ($referer === '') {
+            $referer = 'https://mindfuldesign.me';
+        }
+
+        $json_body = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json_body === false) {
+            return new WP_Error('json_error', 'Failed to encode request: ' . json_last_error_msg());
+        }
+
+        $api_timeout = isset($options['timeout']) ? max(60, (int) $options['timeout']) : 120;
+
+        $response = wp_remote_post('https://openrouter.ai/api/v1/chat/completions', array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $api_key,
+                'Content-Type' => 'application/json',
+                'HTTP-Referer' => $referer,
+                'X-Title' => 'MindfulSEO',
+            ),
+            'body' => $json_body,
+            'timeout' => $api_timeout,
+            'sslverify' => true,
+            'httpversion' => '1.1',
+        ));
+
+        if (is_wp_error($response)) {
+            error_log('MindfulSEO OpenRouter Error: ' . $response->get_error_message());
+            return $response;
+        }
+
+        $raw_body = wp_remote_retrieve_body($response);
+        $status_code = wp_remote_retrieve_response_code($response);
+        $decoded = json_decode($raw_body, true);
+
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            return new WP_Error('invalid_json', 'OpenRouter returned non-JSON (HTTP ' . $status_code . ')');
+        }
+
+        if (isset($decoded['error'])) {
+            $err_msg = isset($decoded['error']['message']) ? $decoded['error']['message'] : wp_json_encode($decoded['error']);
+            return new WP_Error('api_error', $err_msg);
+        }
+
+        if (!isset($decoded['choices'][0]['message']['content'])) {
+            return new WP_Error('invalid_response', 'OpenRouter response missing content');
+        }
+
+        $content = $decoded['choices'][0]['message']['content'];
+        if (empty($content) || !is_string($content) || strlen(trim($content)) < 5) {
+            return new WP_Error('empty_response', 'OpenRouter returned empty content');
+        }
+
+        $usage_context = isset($options['usage_context']) ? (string) $options['usage_context'] : 'generate_content';
+        if (class_exists('MFSEO_Logger')) {
+            $logger = MFSEO_Logger::get_instance();
+            $norm = isset($decoded['usage']) ? MFSEO_Logger::normalize_usage_tokens($decoded['usage']) : null;
+            if ($norm === null) {
+                $logger->log_api_call('openrouter', 0, 0, 0, $model, $usage_context, 'production', 'usage_missing');
+            } else {
+                $cost = class_exists('MFSEO_OpenAI_Provider') ? MFSEO_OpenAI_Provider::estimate_openrouter_usd($model, $norm['in'], $norm['out']) : $this->estimate_openai_cost($model, $norm['in'], $norm['out']);
+                $logger->log_api_call('openrouter', $norm['in'], $norm['out'], $cost, $model, $usage_context);
+            }
+        }
+
         return $content;
     }
     

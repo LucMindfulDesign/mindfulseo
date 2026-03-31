@@ -17,9 +17,13 @@
             }
             this.bindEvents();
             if ($('#wizard-step-3').length) {
+                this.syncStep3SavedPanels();
                 this.syncWizardUseSavedUI();
             }
             this.bindFormatExampleModal();
+            if ($('#mfseo_wizard_ai').length) {
+                this.syncWizardStep1AiPanels();
+            }
         },
 
         bindFormatExampleModal: function() {
@@ -86,7 +90,12 @@
             $(document).on('click', '#wizard-step-3-analyze', function() { self.runAnalysis(); });
             $(document).on('click', '#wizard-step-3-skip', function() { self.goToStep(4); });
             $(document).on('click', '#wizard-step-3-continue-final', function() { self.goToStep(4); });
-            $(document).on('change', '#wizard-use-saved', function() { self.syncWizardUseSavedUI(); });
+            $(document).on('change', '#wizard-use-saved', function() {
+                if (!$(this).prop('disabled')) {
+                    $(this).data('mfseoUserToggled', true);
+                }
+                self.syncWizardUseSavedUI();
+            });
             $('#wizard-csv-file').on('change', function() {
                 $('#wizard-import-csv').prop('disabled', !this.files.length);
             });
@@ -99,13 +108,9 @@
             $('#wizard-step-4-back').on('click', function() { self.goToStep(3); });
             $('#wizard-step-4-skip').on('click', function() { self.completeWizard(); });
             
-            // AI provider toggle
-            $('input[name="ai_provider"]').on('change', function() {
-                const provider = $(this).val();
-                $('.mfseo-wizard-provider-card').removeClass('active');
-                $(this).closest('.mfseo-wizard-provider-card').addClass('active');
-                $('.mfseo-wizard-api-config').hide();
-                $('#' + provider + '-config').show();
+            // Step 1: AI connection dropdown (delegated + namespaced)
+            $(document).off('change.mfseoStep1Ai', '#mfseo_wizard_ai').on('change.mfseoStep1Ai', '#mfseo_wizard_ai', function() {
+                self.syncWizardStep1AiPanels();
             });
             
             // Site type toggle
@@ -147,6 +152,19 @@
                 self.dismissWizard();
             });
         },
+
+        syncWizardStep1AiPanels: function() {
+            var sel = document.getElementById('mfseo_wizard_ai');
+            var step1 = document.getElementById('wizard-step-1');
+            if (!sel || !step1) {
+                return;
+            }
+            var mode = sel.value || 'openai';
+            if (mode !== 'openai' && mode !== 'claude' && mode !== 'openrouter') {
+                mode = 'openai';
+            }
+            step1.setAttribute('data-ai-panel', mode);
+        },
         
         goToStep: function(step) {
             if (step < 1 || step > this.totalSteps) {
@@ -176,6 +194,8 @@
                     $('#wizard-analyze-progress').hide();
                     $('#wizard-analyze-info').show();
                     $('#wizard-analyze-results').hide();
+                    $('.mfseo-wizard-saved-summary').show();
+                    self.syncStep3SavedPanels();
                     var $an = $('#wizard-step-3-analyze');
                     $an.prop('disabled', $an.attr('data-analyze-enabled') !== '1');
                 }
@@ -186,9 +206,13 @@
             let data = {};
             
             if (step === 1) {
-                data.ai_provider = $('input[name="ai_provider"]:checked').val();
-                data.openai_api_key = $('input[name="openai_api_key"]').val();
-                data.claude_api_key = $('input[name="claude_api_key"]').val();
+                var mode = $('#mfseo_wizard_ai').val() || 'openai';
+                data.ai_backend = (mode === 'openrouter') ? 'openrouter' : 'direct';
+                data.ai_provider = (mode === 'openrouter') ? 'openai' : mode;
+                data.openai_api_key = $('input[name="openai_api_key"]').val() || '';
+                data.claude_api_key = $('input[name="claude_api_key"]').val() || '';
+                data.openrouter_api_key = $('input[name="openrouter_api_key"]').val() || '';
+                data.openrouter_model = $('#wizard-openrouter-model').val() || '';
             } else if (step === 2) {
                 data.site_type = $('input[name="site_type"]:checked').val() || '';
             }
@@ -214,8 +238,12 @@
         testAPI: function($btn) {
             const provider = $btn.data('provider');
             const $result = $btn.siblings('.api-test-result');
-            const $input = $btn.siblings('label').find('input');
-            const apiKey = $input.val();
+            var apiKey;
+            if (provider === 'openrouter') {
+                apiKey = $('input[name="openrouter_api_key"]').val();
+            } else {
+                apiKey = $btn.siblings('label').first().find('input').val();
+            }
             
             if (!apiKey) {
                 $result.html('<p class="error">Please enter your API key first</p>');
@@ -224,23 +252,32 @@
             
             $btn.prop('disabled', true).text('Testing...');
             $result.html('<p class="info">Testing connection...</p>');
+
+            var ajaxData = {
+                    action: 'mfseo_wizard_test_api',
+                    nonce: mfseoWizard.nonce,
+                    provider: provider,
+                    api_key: apiKey
+            };
+            if (provider === 'openrouter') {
+                ajaxData.model = $('#wizard-openrouter-model').val() || '';
+            }
             
             $.ajax({
                 url: mfseoWizard.ajaxUrl,
                 method: 'POST',
                 timeout: 30000,
-                data: {
-                    action: 'mfseo_wizard_test_api',
-                    nonce: mfseoWizard.nonce,
-                    provider: provider,
-                    api_key: apiKey
-                },
+                data: ajaxData,
                 success: function(response) {
                     $btn.prop('disabled', false).html('<span class="dashicons dashicons-yes"></span> Test Connection');
                     if (response.success) {
                         $result.html('<p class="success">' + response.data.message + '</p>');
                     } else {
-                        $result.html('<p class="error">' + response.data + '</p>');
+                        var err = response.data;
+                        if (err && typeof err === 'object' && err.message) {
+                            err = err.message;
+                        }
+                        $result.html('<p class="error">' + err + '</p>');
                     }
                 },
                 error: function() {
@@ -273,7 +310,7 @@
                 data: formData,
                 processData: false,
                 contentType: false,
-                timeout: 30000,
+                timeout: 180000,
                 success: function(response) {
                     if (response.success) {
                         var d = response.data;
@@ -282,6 +319,7 @@
                         if (typeof d.keywords_total === 'number' && typeof d.guidelines_total === 'number') {
                             self.updateWizardSavedCounts(d.keywords_total, d.guidelines_total);
                         }
+                        fileInput.value = '';
                     } else {
                         $status.css('color', '#dc3232').text('Error: ' + (response.data || 'Import failed'));
                     }
@@ -291,7 +329,6 @@
                 },
                 complete: function() {
                     $btn.prop('disabled', false).text('Import');
-                    fileInput.value = '';
                 }
             });
         },
@@ -317,7 +354,7 @@
                 data: formData,
                 processData: false,
                 contentType: false,
-                timeout: 30000,
+                timeout: 180000,
                 success: function(response) {
                     if (response.success) {
                         var d = response.data;
@@ -327,6 +364,7 @@
                         if (typeof d.keywords_total === 'number' && typeof d.guidelines_total === 'number') {
                             self.updateWizardSavedCounts(d.keywords_total, d.guidelines_total);
                         }
+                        fileInput.value = '';
                     } else {
                         $status.css('color', '#dc3232').text('Error: ' + (response.data || 'Import failed'));
                     }
@@ -336,9 +374,99 @@
                 },
                 complete: function() {
                     $btn.prop('disabled', false).text('Import');
-                    fileInput.value = '';
                 }
             });
+        },
+
+        /**
+         * If user chose files but did not click Import, save them before Analyze (same DB writes as Import buttons).
+         */
+        preflightStep3Imports: function() {
+            var self = this;
+            var deferred = $.Deferred();
+            var kwInput = document.getElementById('wizard-csv-file');
+            var glInput = document.getElementById('wizard-guidelines-csv-file');
+
+            function postFile(action, file) {
+                var fd = new FormData();
+                fd.append('action', action);
+                fd.append('nonce', mfseoWizard.nonce);
+                fd.append('csv_file', file);
+                return $.ajax({
+                    url: mfseoWizard.ajaxUrl,
+                    type: 'POST',
+                    data: fd,
+                    processData: false,
+                    contentType: false,
+                    timeout: 180000
+                });
+            }
+
+            function failMsg(res) {
+                if (!res) {
+                    return 'Import failed.';
+                }
+                if (typeof res.data === 'string') {
+                    return res.data;
+                }
+                return 'Import failed.';
+            }
+
+            function chainGl() {
+                if (!glInput.files.length) {
+                    deferred.resolve();
+                    return;
+                }
+                var $st = $('#wizard-import-guidelines-status');
+                postFile('mfseo_wizard_import_guidelines_csv', glInput.files[0])
+                    .done(function(res) {
+                        if (res.success) {
+                            var d = res.data;
+                            if (typeof d.keywords_total === 'number' && typeof d.guidelines_total === 'number') {
+                                self.updateWizardSavedCounts(d.keywords_total, d.guidelines_total);
+                            }
+                            var fmt = d.format ? ' (' + d.format + ')' : '';
+                            $st.css('color', d.imported > 0 ? '#46b450' : '#dc3232')
+                                .text('Saved ' + d.imported + ' guidelines' + (d.skipped ? ', ' + d.skipped + ' skipped' : '') + fmt);
+                            glInput.value = '';
+                            deferred.resolve();
+                        } else {
+                            deferred.reject(failMsg(res));
+                        }
+                    })
+                    .fail(function() {
+                        deferred.reject('Guidelines import: connection error.');
+                    });
+            }
+
+            function chainKw() {
+                if (!kwInput.files.length) {
+                    chainGl();
+                    return;
+                }
+                var $st = $('#wizard-import-status');
+                postFile('mfseo_wizard_import_csv', kwInput.files[0])
+                    .done(function(res) {
+                        if (res.success) {
+                            var d = res.data;
+                            if (typeof d.keywords_total === 'number' && typeof d.guidelines_total === 'number') {
+                                self.updateWizardSavedCounts(d.keywords_total, d.guidelines_total);
+                            }
+                            var msg = d.message || ('Saved ' + d.imported + ' keywords');
+                            $st.css('color', d.imported > 0 ? '#46b450' : '#dc3232').text(msg);
+                            kwInput.value = '';
+                            chainGl();
+                        } else {
+                            deferred.reject(failMsg(res));
+                        }
+                    })
+                    .fail(function() {
+                        deferred.reject('Keyword import: connection error.');
+                    });
+            }
+
+            chainKw();
+            return deferred.promise();
         },
         
         clearStep3Warnings: function() {
@@ -358,19 +486,45 @@
             }
         },
         
+        hasPrestartStrategy: function() {
+            return $('#wizard-step-3').attr('data-prestart-strategy') === '1';
+        },
+
         updateWizardSavedCounts: function(kw, gl) {
             var $m = $('#wizard-saved-meta');
             if (!$m.length) {
                 return;
             }
+            kw = parseInt(kw, 10) || 0;
+            gl = parseInt(gl, 10) || 0;
             $m.attr('data-kw', kw).attr('data-gl', gl);
-            if (kw + gl > 0) {
-                var $t = $('#wizard-use-saved');
-                if ($t.prop('disabled')) {
-                    $t.prop('disabled', false).prop('checked', true);
+            var prestart = this.hasPrestartStrategy();
+            var s = (typeof mfseoWizard !== 'undefined' && mfseoWizard.strings) ? mfseoWizard.strings : {};
+            var $line = $('#wizard-saved-summary-line');
+            if (prestart && $line.length) {
+                if (kw + gl > 0) {
+                    var tmpl = s.savedSummaryLine || 'You have %1$s keywords and %2$s language guidelines saved in MindfulSEO.';
+                    $line.removeClass('mfseo-wizard-saved-summary-intro').text(
+                        tmpl.replace('%1$s', kw.toLocaleString()).replace('%2$s', gl.toLocaleString())
+                    );
+                } else {
+                    $line.addClass('mfseo-wizard-saved-summary-intro').text(
+                        s.savedSummaryEmpty || 'No keywords or guidelines in MindfulSEO yet — import files below, then run analysis (or analyze first).'
+                    );
                 }
-                $('#wizard-step-3').attr('data-has-saved', '1');
             }
+            if (prestart) {
+                if (kw + gl > 0) {
+                    var $t = $('#wizard-use-saved');
+                    $t.prop('disabled', false);
+                    if (!$t.prop('checked') && $t.data('mfseoUserToggled') !== true) {
+                        $t.prop('checked', true);
+                    }
+                } else {
+                    $('#wizard-use-saved').prop('disabled', true).prop('checked', false).removeData('mfseoUserToggled');
+                }
+            }
+            this.syncStep3SavedPanels();
             this.syncWizardUseSavedUI();
         },
         
@@ -385,10 +539,22 @@
             if (isNaN(gl)) gl = 0;
             return { kw: kw, gl: gl };
         },
+
+        syncStep3SavedPanels: function() {
+            if (!this.hasPrestartStrategy()) {
+                return;
+            }
+            var c = this.getWizardSavedCounts();
+            var has = (c.kw + c.gl) > 0;
+            var $full = $('#wizard-saved-full-controls');
+            if ($full.length) {
+                $full.toggle(has);
+            }
+        },
         
         syncWizardUseSavedUI: function() {
             var $step = $('#wizard-step-3');
-            if (!$step.length) {
+            if (!$step.length || !this.hasPrestartStrategy()) {
                 return;
             }
             var $toggle = $('#wizard-use-saved');
@@ -400,13 +566,22 @@
             var hasSaved = (counts.kw + counts.gl) > 0;
             var useSaved = $toggle.is(':checked');
 
-            if (hasSaved && $regen.length) {
-                if (useSaved) {
-                    $('#wizard-regenerate-keywords, #wizard-regenerate-guidelines').prop('checked', true).prop('disabled', true);
-                    $regen.addClass('is-disabled');
-                } else {
+            if (!hasSaved) {
+                $toggle.prop('disabled', true).prop('checked', false);
+                if ($regen.length) {
                     $regen.removeClass('is-disabled');
-                    $('#wizard-regenerate-keywords, #wizard-regenerate-guidelines').prop('disabled', false);
+                    $('#wizard-regenerate-keywords, #wizard-regenerate-guidelines').prop('disabled', true).prop('checked', true);
+                }
+            } else {
+                $toggle.prop('disabled', false);
+                if ($regen.length) {
+                    if (useSaved) {
+                        $('#wizard-regenerate-keywords, #wizard-regenerate-guidelines').prop('checked', true).prop('disabled', true);
+                        $regen.addClass('is-disabled');
+                    } else {
+                        $regen.removeClass('is-disabled');
+                        $('#wizard-regenerate-keywords, #wizard-regenerate-guidelines').prop('disabled', false);
+                    }
                 }
             }
 
@@ -454,7 +629,12 @@
                 alert(msg);
                 return;
             }
-            
+
+            var kwInputEl = document.getElementById('wizard-csv-file');
+            var glInputEl = document.getElementById('wizard-guidelines-csv-file');
+            var pendingFiles = (kwInputEl && kwInputEl.files.length > 0) || (glInputEl && glInputEl.files.length > 0);
+
+            function runAnalyzeAjax() {
             self.step3ExitCompletionMode();
             self.clearStep3Warnings();
             self.setStep3ResultLabels('ai');
@@ -462,30 +642,56 @@
             
             $btn.prop('disabled', true);
             $info.hide();
+            $('.mfseo-wizard-saved-summary').hide();
+            $('#wizard-saved-full-controls').hide();
             $actions.hide();
             $progress.show();
             
-            // Animate progress bar while waiting
-            var fakeProgress = 0;
+            var deepAnalysisChk = $('#wizard-deep-analysis').is(':checked');
+            var deepAnalysis = deepAnalysisChk ? 1 : 0;
+            // Expected server time (ms): one AI-heavy request; asymptotic bar never “stalls” mid-way on purpose.
+            var estMs = deepAnalysisChk ? 200000 : 80000;
+            if (regenKw && !regenGl) {
+                estMs *= 0.55;
+            } else if (!regenKw && regenGl) {
+                estMs *= 0.5;
+            }
+            estMs = Math.max(45000, estMs);
+            var progressStartMs = Date.now();
             var progressInterval = setInterval(function() {
-                fakeProgress += Math.random() * 5;
-                if (fakeProgress > 92) fakeProgress = 92;
-                $barFill.css('width', fakeProgress + '%');
-                
-                if (fakeProgress < 15) {
+                var elapsed = Date.now() - progressStartMs;
+                var tau = estMs * 0.42;
+                var asympt = 96 * (1 - Math.exp(-elapsed / tau));
+                var pct = Math.min(94, Math.max(3, asympt));
+                $barFill.css('width', pct + '%');
+                var phase = elapsed / estMs;
+                if (phase < 0.1) {
                     $status.text('Scanning all published content...');
-                } else if (fakeProgress < 35) {
+                } else if (phase < 0.22) {
                     $status.text('Extracting names, entities & terminology...');
-                } else if (fakeProgress < 55) {
-                    $status.text('AI is generating keyword strategy...');
-                } else if (fakeProgress < 75) {
-                    $status.text('Detecting capitalization & preferred terms...');
+                } else if (phase < 0.48) {
+                    if (regenKw) {
+                        $status.text('AI is generating keyword strategy...');
+                    } else {
+                        $status.text('Preparing guideline context...');
+                    }
+                } else if (phase < 0.72) {
+                    if (regenKw && regenGl) {
+                        $status.text('Finishing keywords; starting language guidelines...');
+                    } else if (regenGl) {
+                        $status.text('Detecting terminology & editorial patterns...');
+                    } else {
+                        $status.text('Almost done with keywords...');
+                    }
                 } else {
-                    $status.text('Building language guidelines...');
+                    if (regenGl) {
+                        $status.text('Building language guidelines (this step is often the longest)...');
+                    } else {
+                        $status.text('Finalizing...');
+                    }
                 }
-            }, 2000);
+            }, 450);
             
-            var deepAnalysis = $('#wizard-deep-analysis').is(':checked') ? 1 : 0;
             var regenKwPost = regenKw ? 1 : 0;
             var regenGlPost = regenGl ? 1 : 0;
             var useSavedContextPost = forceFullImprove ? 1 : 0;
@@ -552,12 +758,32 @@
                                 var defaultNote = (mfseoWizard.strings && mfseoWizard.strings.analyzeNoteDefault)
                                     ? mfseoWizard.strings.analyzeNoteDefault
                                     : 'You can review and edit these anytime from the Keyword Strategy and Language Guidelines pages.';
+                                var wp = response.data.wizard_preservation;
+                                if (wp && (wp.keywords_protected > 0 || wp.guidelines_protected > 0)) {
+                                    var s = mfseoWizard.strings || {};
+                                    var sum = s.wizardPreservationSummary
+                                        ? s.wizardPreservationSummary
+                                            .replace('%1$s', String(wp.keywords_protected))
+                                            .replace('%2$s', String(wp.guidelines_protected))
+                                        : ('Protected your imports: ' + wp.keywords_protected + ' keyword row(s) and ' + wp.guidelines_protected + ' guideline row(s) were kept separate from AI additions.');
+                                    defaultNote = sum + ' ' + defaultNote;
+                                    var rk = wp.keywords_restored || 0;
+                                    var rg = wp.guidelines_restored || 0;
+                                    if (rk > 0 || rg > 0) {
+                                        var rs = s.wizardPreservationRestored
+                                            ? s.wizardPreservationRestored.replace('%1$s', String(rk)).replace('%2$s', String(rg))
+                                            : (' Re-synced ' + rk + ' keyword and ' + rg + ' guideline row(s).');
+                                        defaultNote += rs;
+                                    }
+                                }
                                 if ($('#wizard-analyze-result-note').length) {
                                     $('#wizard-analyze-result-note').text(defaultNote);
                                 }
                                 $icon.removeClass('mfseo-wizard-analyze-result-icon--warning').addClass('mfseo-wizard-analyze-result-icon--success');
                                 $icon.find('.dashicons').removeClass('dashicons-warning').addClass('dashicons-yes-alt');
                             }
+                            $('.mfseo-wizard-saved-summary').show();
+                            self.syncStep3SavedPanels();
                             $results.show();
                             self.step3EnterCompletionMode();
                             $actions.show();
@@ -565,6 +791,8 @@
                     } else {
                         $progress.hide();
                         $info.show();
+                        $('.mfseo-wizard-saved-summary').show();
+                        self.syncStep3SavedPanels();
                         $actions.show();
                         $btn.prop('disabled', false);
                         alert('Analysis failed: ' + (response.data || 'Unknown error'));
@@ -574,11 +802,40 @@
                     clearInterval(progressInterval);
                     $progress.hide();
                     $info.show();
+                    $('.mfseo-wizard-saved-summary').show();
+                    self.syncStep3SavedPanels();
                     $actions.show();
                     $btn.prop('disabled', false);
                     alert('Connection error. Please try again.');
                 }
             });
+            }
+
+            if (pendingFiles) {
+                $btn.prop('disabled', true);
+                $info.hide();
+                $actions.hide();
+                $progress.show();
+                $status.text('Saving imported keyword/guideline files to the database...');
+                $barFill.css('width', '5%');
+                self.preflightStep3Imports().done(function() {
+                    $progress.hide();
+                    $status.text('');
+                    $barFill.css('width', '0%');
+                    runAnalyzeAjax();
+                }).fail(function(err) {
+                    $progress.hide();
+                    $info.show();
+                    $actions.show();
+                    $btn.prop('disabled', false);
+                    $('.mfseo-wizard-saved-summary').show();
+                    self.syncStep3SavedPanels();
+                    alert(err || 'Import failed.');
+                });
+                return;
+            }
+
+            runAnalyzeAjax();
         },
         
         // ── Step 4: Quick Optimize ──

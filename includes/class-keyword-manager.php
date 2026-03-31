@@ -62,6 +62,68 @@ class MFSEO_Keyword_Manager {
         global $wpdb;
         return $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $this->table_name)) === $this->table_name;
     }
+
+    /**
+     * Normalize stored priority to HIGH, MEDIUM, or LOW (invalid/empty → MEDIUM).
+     *
+     * @param string $p Raw value from CSV, wizard, or inline edit.
+     * @return string
+     */
+    public function normalize_keyword_priority($p) {
+        $p = strtoupper(trim((string) sanitize_text_field($p)));
+        if ('HIGH' === $p) {
+            return 'HIGH';
+        }
+        if ('LOW' === $p) {
+            return 'LOW';
+        }
+        if ('MEDIUM' === $p) {
+            return 'MEDIUM';
+        }
+        // Common spreadsheet / alternative labels
+        if (in_array($p, array('1', 'P1', 'I', 'TOP', 'TIER 1', 'TIER1'), true)) {
+            return 'HIGH';
+        }
+        if (in_array($p, array('3', 'P3', 'III', 'TIER 3', 'TIER3'), true)) {
+            return 'LOW';
+        }
+        if (in_array($p, array('2', 'P2', 'II', 'TIER 2', 'TIER2'), true)) {
+            return 'MEDIUM';
+        }
+        return 'MEDIUM';
+    }
+
+    /**
+     * One-time normalize legacy priority values in DB (e.g. "HIGH " from old wizard imports).
+     */
+    public function maybe_normalize_stored_priorities() {
+        if (get_option('mfseo_kw_priority_backfill_v1', '')) {
+            return;
+        }
+        global $wpdb;
+        if (!$this->table_exists()) {
+            return;
+        }
+        $ids = $wpdb->get_results("SELECT id, priority FROM {$this->table_name}", ARRAY_A);
+        if (!is_array($ids)) {
+            update_option('mfseo_kw_priority_backfill_v1', '1', false);
+            return;
+        }
+        foreach ($ids as $row) {
+            $id = (int) $row['id'];
+            $norm = $this->normalize_keyword_priority($row['priority']);
+            if ($norm !== $row['priority']) {
+                $wpdb->update(
+                    $this->table_name,
+                    array('priority' => $norm),
+                    array('id' => $id),
+                    array('%s'),
+                    array('%d')
+                );
+            }
+        }
+        update_option('mfseo_kw_priority_backfill_v1', '1', false);
+    }
     
     /**
      * Import CSV file
@@ -69,7 +131,11 @@ class MFSEO_Keyword_Manager {
      * @param array $file $_FILES array element
      * @return array|WP_Error Import result or error
      */
-    public function import_csv($file) {
+    /**
+     * @param array $file $_FILES element
+     * @param array $args Optional. wizard_merge + csv_source — setup wizard overwrites duplicate rows so imports win over AI.
+     */
+    public function import_csv($file, $args = array()) {
         if (!$this->csv_importer) {
             return new WP_Error(
                 'importer_not_available',
@@ -91,10 +157,19 @@ class MFSEO_Keyword_Manager {
             return $parsed_data;
         }
         
+        $import_opts = array();
+        if ( ! empty( $args['wizard_merge'] ) ) {
+            $import_opts['merge_duplicates'] = true;
+            $import_opts['csv_source']      = ! empty( $args['csv_source'] )
+                ? $args['csv_source']
+                : 'Wizard Import (CSV)';
+        }
+        
         // Import to database
         $import_result = $this->csv_importer->import_to_database(
             $parsed_data,
-            $file['name']
+            $file['name'],
+            $import_opts
         );
         
         if (is_wp_error($import_result)) {
@@ -143,7 +218,7 @@ class MFSEO_Keyword_Manager {
                 'primary_keyword' => sanitize_text_field($data['primary_keyword']),
                 'longtail_keyword' => sanitize_text_field($data['longtail_keyword']),
                 'search_intent' => isset($data['search_intent']) ? sanitize_text_field($data['search_intent']) : 'Informational',
-                'priority' => isset($data['priority']) ? strtoupper(sanitize_text_field($data['priority'])) : 'MEDIUM',
+                'priority' => $this->normalize_keyword_priority(isset($data['priority']) ? $data['priority'] : 'MEDIUM'),
                 'current_sessions' => isset($data['current_sessions']) ? intval($data['current_sessions']) : 0,
                 'notes' => isset($data['notes']) ? sanitize_textarea_field($data['notes']) : '',
                 'csv_source' => isset($data['csv_source']) ? sanitize_text_field($data['csv_source']) : 'Manual',
@@ -171,6 +246,7 @@ class MFSEO_Keyword_Manager {
         if (!$this->table_exists()) {
             return array();
         }
+        $this->maybe_normalize_stored_priorities();
         
         $defaults = array(
             'primary_keyword' => '',
@@ -200,7 +276,7 @@ class MFSEO_Keyword_Manager {
         
         if (!empty($args['priority'])) {
             $query .= " AND priority = %s";
-            $query_params[] = strtoupper($args['priority']);
+            $query_params[] = $this->normalize_keyword_priority($args['priority']);
         }
         
         // Order by
@@ -208,9 +284,9 @@ class MFSEO_Keyword_Manager {
         $orderby = in_array($args['orderby'], $allowed_orderby) ? $args['orderby'] : 'priority';
         $order = in_array(strtoupper($args['order']), array('ASC', 'DESC')) ? strtoupper($args['order']) : 'ASC';
         
-        // Priority custom sort (HIGH, MEDIUM, LOW)
+        // Priority custom sort (HIGH, MEDIUM, LOW); unknown values sort like MEDIUM
         if ($orderby === 'priority') {
-            $query .= " ORDER BY FIELD(priority, 'HIGH', 'MEDIUM', 'LOW') {$order}";
+            $query .= " ORDER BY CASE WHEN priority IN ('HIGH','MEDIUM','LOW') THEN FIELD(priority, 'HIGH', 'MEDIUM', 'LOW') ELSE 2 END {$order}";
         } else {
             $query .= " ORDER BY {$orderby} {$order}";
         }
@@ -260,7 +336,7 @@ class MFSEO_Keyword_Manager {
         }
         
         return $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM {$this->table_name} WHERE primary_keyword = %s ORDER BY priority ASC",
+            "SELECT * FROM {$this->table_name} WHERE primary_keyword = %s ORDER BY CASE WHEN priority IN ('HIGH','MEDIUM','LOW') THEN FIELD(priority, 'HIGH', 'MEDIUM', 'LOW') ELSE 2 END ASC",
             $primary_keyword
         ));
     }
@@ -419,7 +495,7 @@ class MFSEO_Keyword_Manager {
         if ($this->_cached_keywords === null) {
             $this->_cached_keywords = $wpdb->get_results(
                 $wpdb->prepare(
-                    "SELECT * FROM {$this->table_name} ORDER BY priority DESC, search_volume DESC LIMIT %d",
+                    "SELECT * FROM {$this->table_name} ORDER BY CASE WHEN priority IN ('HIGH','MEDIUM','LOW') THEN FIELD(priority, 'HIGH', 'MEDIUM', 'LOW') ELSE 2 END ASC, search_volume DESC LIMIT %d",
                     2000
                 )
             );
@@ -592,6 +668,9 @@ class MFSEO_Keyword_Manager {
         
         foreach ($data as $field => $value) {
             if (in_array($field, $allowed_fields)) {
+                if ('priority' === $field) {
+                    $value = $this->normalize_keyword_priority($value);
+                }
                 $update_data[$field] = $value;
                 $format[] = is_numeric($value) ? '%d' : '%s';
             }
@@ -653,6 +732,77 @@ class MFSEO_Keyword_Manager {
         );
         
         return $result !== false ? $result : 0;
+    }
+
+    /**
+     * Keyword rows that must never be removed by wizard “refresh AI” (everything except Auto-generated bucket).
+     *
+     * @return object[] Full row objects.
+     */
+    public function get_preservable_keyword_rows() {
+        global $wpdb;
+        if ( ! $this->table_exists() ) {
+            return array();
+        }
+        return $wpdb->get_results(
+            "SELECT * FROM {$this->table_name}
+             WHERE csv_source IS NULL
+                OR TRIM( IFNULL( csv_source, '' ) ) = ''
+                OR LOWER( TRIM( csv_source ) ) <> 'auto-generated'",
+            OBJECT
+        );
+    }
+
+    /**
+     * After wizard AI import: restore any preservable row missing from DB (primary+longtail).
+     *
+     * @param object[] $rows Rows from get_preservable_keyword_rows() captured before deletes.
+     * @return int Number of rows re-inserted.
+     */
+    public function reinsert_missing_keywords( $rows ) {
+        global $wpdb;
+        if ( ! $this->table_exists() || empty( $rows ) || ! is_array( $rows ) ) {
+            return 0;
+        }
+        $n = 0;
+        foreach ( $rows as $row ) {
+            $pk = isset( $row->primary_keyword ) ? (string) $row->primary_keyword : '';
+            $lt = isset( $row->longtail_keyword ) ? (string) $row->longtail_keyword : '';
+            if ( $pk === '' || $lt === '' ) {
+                continue;
+            }
+            $exists = $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT id FROM {$this->table_name} WHERE primary_keyword = %s AND longtail_keyword = %s",
+                    $pk,
+                    $lt
+                )
+            );
+            if ( $exists ) {
+                continue;
+            }
+            $src = isset( $row->csv_source ) && $row->csv_source !== '' ? $row->csv_source : 'Manual';
+            $ins = $wpdb->insert(
+                $this->table_name,
+                array(
+                    'primary_keyword'    => $pk,
+                    'longtail_keyword'   => $lt,
+                    'search_intent'      => isset( $row->search_intent ) ? (string) $row->search_intent : 'Informational',
+                    'priority'           => $this->normalize_keyword_priority(
+                        isset( $row->priority ) ? $row->priority : 'MEDIUM'
+                    ),
+                    'current_sessions'   => isset( $row->current_sessions ) ? (int) $row->current_sessions : 0,
+                    'notes'              => isset( $row->notes ) ? (string) $row->notes : '',
+                    'csv_source'         => $src,
+                    'created_date'       => isset( $row->created_date ) ? $row->created_date : current_time( 'mysql' ),
+                ),
+                array( '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' )
+            );
+            if ( $ins ) {
+                $n++;
+            }
+        }
+        return $n;
     }
     
     /**

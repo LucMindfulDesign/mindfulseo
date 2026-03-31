@@ -81,9 +81,9 @@ class MFSEO_Logger {
      * @param string $usage_context Short label: feature that triggered the call (e.g. batch_optimizer, content_analyzer_keywords)
      * @return int|false Log ID or false
      */
-    public function log_api_call($provider, $prompt_tokens, $completion_tokens, $cost, $model = '', $usage_context = '') {
+    public function log_api_call($provider, $prompt_tokens, $completion_tokens, $cost, $model = '', $usage_context = '', $call_kind = 'production', $usage_note = '') {
         global $wpdb;
-        
+
         $table = $wpdb->prefix . 'mindfulseo_logs';
 
         $message = '';
@@ -95,23 +95,89 @@ class MFSEO_Logger {
         } elseif ($usage_context !== '') {
             $message = $usage_context;
         }
-        
-        $result = $wpdb->insert(
-            $table,
-            array(
-                'log_type'         => 'api_call',
-                'ai_provider'      => $provider,
-                'prompt_tokens'    => $prompt_tokens,
-                'completion_tokens' => $completion_tokens,
-                'cost'             => $cost,
-                'message'          => $message !== '' ? $message : null,
-                'user_id'          => get_current_user_id(),
-                'created_at'       => current_time('mysql'),
-            ),
-            array('%s', '%s', '%d', '%d', '%f', '%s', '%d', '%s')
-        );
-        
+        if ($usage_note !== '') {
+            $message .= ($message !== '' ? ' :: ' : '') . $usage_note;
+        }
+
+        $extended = version_compare(get_option('mindfulseo_db_version', '1.0.0'), '1.3.0', '>=');
+        if ($extended) {
+            $result = $wpdb->insert(
+                $table,
+                array(
+                    'log_type'            => 'api_call',
+                    'ai_provider'         => $provider,
+                    'ai_model'            => $model !== '' ? $model : null,
+                    'prompt_tokens'       => $prompt_tokens,
+                    'completion_tokens'   => $completion_tokens,
+                    'usage_context'       => $usage_context !== '' ? $usage_context : null,
+                    'cost'                => $cost,
+                    'message'             => $message !== '' ? $message : null,
+                    'api_call_kind'       => $call_kind !== '' ? $call_kind : 'production',
+                    'user_id'             => get_current_user_id(),
+                    'created_at'          => current_time('mysql'),
+                ),
+                array('%s', '%s', '%s', '%d', '%d', '%s', '%f', '%s', '%s', '%d', '%s')
+            );
+        } else {
+            $result = $wpdb->insert(
+                $table,
+                array(
+                    'log_type'            => 'api_call',
+                    'ai_provider'         => $provider,
+                    'prompt_tokens'       => $prompt_tokens,
+                    'completion_tokens'   => $completion_tokens,
+                    'cost'                => $cost,
+                    'message'             => $message !== '' ? $message : null,
+                    'user_id'             => get_current_user_id(),
+                    'created_at'          => current_time('mysql'),
+                ),
+                array('%s', '%s', '%d', '%d', '%f', '%s', '%d', '%s')
+            );
+        }
+
         return $result ? $wpdb->insert_id : false;
+    }
+
+    /**
+     * Normalize usage blocks from OpenAI-, OpenRouter-, or Claude-shaped JSON.
+     *
+     * @param array|null $usage Raw usage array.
+     * @return array|null { in: int, out: int } or null.
+     */
+    public static function normalize_usage_tokens($usage) {
+        if (!is_array($usage)) {
+            return null;
+        }
+        $in  = 0;
+        $out = 0;
+        if (isset($usage['prompt_tokens'])) {
+            $in = (int) $usage['prompt_tokens'];
+        } elseif (isset($usage['input_tokens'])) {
+            $in = (int) $usage['input_tokens'];
+        }
+        if (isset($usage['completion_tokens'])) {
+            $out = (int) $usage['completion_tokens'];
+        } elseif (isset($usage['output_tokens'])) {
+            $out = (int) $usage['output_tokens'];
+        }
+        if ($in === 0 && $out === 0 && isset($usage['total_tokens'])) {
+            $in = (int) $usage['total_tokens'];
+        }
+        if ($in === 0 && $out === 0 && $usage === array()) {
+            return null;
+        }
+        return array('in' => $in, 'out' => $out);
+    }
+
+    /**
+     * @param bool $exclude
+     * @return string
+     */
+    private function get_exclude_connection_tests_sql($exclude) {
+        if (!$exclude || version_compare(get_option('mindfulseo_db_version', '1.0.0'), '1.3.0', '<')) {
+            return '';
+        }
+        return " AND (api_call_kind IS NULL OR api_call_kind <> 'connection_test')";
     }
 
     /**
@@ -149,12 +215,13 @@ class MFSEO_Logger {
      * @param string $date_range  'today' | 'week' | 'month' | 'all'
      * @return array  Array of [ 'day' => 'YYYY-MM-DD', 'provider' => string, 'calls' => int, 'cost' => float ]
      */
-    public function get_api_daily_trend($date_range = 'month') {
+    public function get_api_daily_trend($date_range = 'month', $exclude_connection_tests = true) {
         global $wpdb;
         $table = $wpdb->prefix . 'mindfulseo_logs';
 
         $where = "log_type = 'api_call'";
         $where .= $this->get_api_call_date_sql_fragment($date_range);
+        $where .= $this->get_exclude_connection_tests_sql($exclude_connection_tests);
 
         return $wpdb->get_results(
             "SELECT DATE(created_at) AS day, ai_provider AS provider,
@@ -277,14 +344,15 @@ class MFSEO_Logger {
      * @param string $date_range Date range (today, week, month, all)
      * @return array Statistics
      */
-    public function get_api_stats($date_range = 'month') {
+    public function get_api_stats($date_range = 'month', $exclude_connection_tests = true) {
         global $wpdb;
-        
+
         $table = $wpdb->prefix . 'mindfulseo_logs';
-        
+
         $where = "log_type = 'api_call'";
         $where .= $this->get_api_call_date_sql_fragment($date_range);
-        
+        $where .= $this->get_exclude_connection_tests_sql($exclude_connection_tests);
+
         // Get overall stats
         $stats = $wpdb->get_row(
             "SELECT 
@@ -296,7 +364,7 @@ class MFSEO_Logger {
             FROM $table
             WHERE $where"
         );
-        
+
         // Get per-provider breakdown
         $provider_stats = $wpdb->get_results(
             "SELECT 
@@ -310,7 +378,7 @@ class MFSEO_Logger {
             GROUP BY ai_provider",
             ARRAY_A
         );
-        
+
         $by_provider = array();
         foreach ($provider_stats as $row) {
             $provider = $row['ai_provider'];
@@ -322,7 +390,7 @@ class MFSEO_Logger {
                 'cost' => (float) $row['cost'],
             );
         }
-        
+
         return array(
             'total_calls' => (int) $stats->total_calls,
             'total_prompt_tokens' => (int) $stats->total_prompt_tokens,
@@ -331,6 +399,39 @@ class MFSEO_Logger {
             'total_cost' => (float) $stats->total_cost,
             'avg_cost' => (float) $stats->avg_cost,
             'by_provider' => $by_provider,
+        );
+    }
+
+    /**
+     * Per-provider and model aggregates (AI chat providers only).
+     *
+     * @param string $date_range today|week|month|all
+     * @param bool   $exclude_connection_tests
+     * @return array<int, array<string,mixed>>
+     */
+    public function get_api_stats_by_model($date_range = 'month', $exclude_connection_tests = true) {
+        global $wpdb;
+        if (version_compare(get_option('mindfulseo_db_version', '1.0.0'), '1.3.0', '<')) {
+            return array();
+        }
+        $table = $wpdb->prefix . 'mindfulseo_logs';
+        $where = "log_type = 'api_call' AND ai_provider IN ('openai','claude','openrouter')";
+        $where .= $this->get_api_call_date_sql_fragment($date_range);
+        $where .= $this->get_exclude_connection_tests_sql($exclude_connection_tests);
+
+        return $wpdb->get_results(
+            "SELECT ai_provider,
+                    COALESCE(NULLIF(ai_model, ''), '(unknown)') AS model_slug,
+                    COUNT(*) AS calls,
+                    SUM(prompt_tokens) AS prompt_tokens,
+                    SUM(completion_tokens) AS completion_tokens,
+                    SUM(cost) AS cost
+             FROM $table
+             WHERE $where
+             GROUP BY ai_provider, COALESCE(NULLIF(ai_model, ''), '(unknown)')
+             ORDER BY cost DESC, calls DESC
+             LIMIT 80",
+            ARRAY_A
         );
     }
     

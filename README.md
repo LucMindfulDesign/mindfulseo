@@ -1,6 +1,6 @@
 # MindfulSEO WordPress Plugin
 
-**Version:** 2.3.0  
+**Version:** 2.4.0  
 **Author:** [Mindful Design](https://mindfuldesign.me)  
 **Website:** [mindfuldesign.me](https://mindfuldesign.me)
 
@@ -50,7 +50,7 @@ AI-powered SEO optimization plugin for WordPress. Batch optimize titles, descrip
 - WordPress 5.8 or higher
 - PHP 7.4 or higher
 - Rank Math SEO or Yoast SEO plugin (recommended)
-- OpenAI API key OR Claude API key
+- OpenAI API key, Claude API key, or **OpenRouter** key (one key, many models)
 - DataForSEO account (optional, for keyword metrics)
 
 ## Quick Start
@@ -88,6 +88,12 @@ See [instructions.md](instructions.md) for comprehensive documentation including
 - DataForSEO integration details
 
 ## Changelog
+
+### 2.4.0 (2026-03-29)
+
+- **New:** OpenRouter AI backend (settings + setup wizard; presets, custom model id, optional fallback to direct vendor APIs)
+- **New:** Posts Import / Export (ZIP with manifest + HTML bodies; slug-based merge modes)
+- **Updated:** Setup wizard import preservation, preflight import before analyze, progress UX; keyword/guideline extend balancing; batch optimizer focus keyword / strategy handling; content analyzer robustness for wizard outputs
 
 ### 2.3.0 (2026-03-26)
 

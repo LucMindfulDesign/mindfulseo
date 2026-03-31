@@ -213,6 +213,97 @@
                 }
             });
         });
+
+        function mfseoToggleDirectCredentialRows() {
+            var orMode = $('#mfseo-ai-backend').val() === 'openrouter';
+            var $details = $('#mfseo-openrouter-fallback-details');
+            if (orMode) {
+                $('.mfseo-direct-cred-tr').toggle($details.length ? $details.prop('open') : false);
+            } else {
+                $('.mfseo-direct-cred-tr').show();
+            }
+        }
+        function mfseoToggleOpenRouterRows() {
+            var on = $('#mfseo-ai-backend').val() === 'openrouter';
+            $('.mfseo-openrouter-only').toggle(on);
+            $('.mfseo-backend-desc-direct').toggle(!on);
+            $('.mfseo-backend-desc-or').toggle(on);
+            $('.mfseo-primary-desc-direct').toggle(!on);
+            $('.mfseo-primary-desc-or').toggle(on);
+            $('.mfseo-fallback-desc-direct').toggle(!on);
+            $('.mfseo-fallback-desc-or').toggle(on);
+            mfseoToggleDirectCredentialRows();
+        }
+        function mfseoSyncBackendFromPrimary() {
+            var v = $('#primary_provider').val();
+            if (v === 'openrouter') {
+                $('#mfseo-ai-backend').val('openrouter');
+            } else if (v === 'openai' || v === 'claude') {
+                $('#mfseo-ai-backend').val('direct');
+            }
+            mfseoToggleOpenRouterRows();
+        }
+        function mfseoSyncPrimaryFromBackend() {
+            var b = $('#mfseo-ai-backend').val();
+            if (b === 'openrouter') {
+                $('#primary_provider').val('openrouter');
+            } else {
+                var pr = $('#primary_provider').val();
+                if (pr === 'openrouter') {
+                    var fb = $('#mfseo_fallback_direct_priority').val();
+                    $('#primary_provider').val(
+                        fb === 'claude' || fb === 'openai' ? fb : 'openai'
+                    );
+                }
+            }
+            mfseoToggleOpenRouterRows();
+        }
+        if ($('#mfseo-ai-backend').length) {
+            $('#mfseo-ai-backend').on('change', mfseoSyncPrimaryFromBackend);
+            var d = document.getElementById('mfseo-openrouter-fallback-details');
+            if (d && d.addEventListener) {
+                d.addEventListener('toggle', mfseoToggleDirectCredentialRows);
+            }
+            mfseoToggleOpenRouterRows();
+        }
+        if ($('#primary_provider').length && $('#mfseo-ai-backend').length) {
+            $('#primary_provider').on('change', mfseoSyncBackendFromPrimary);
+        }
+
+        $('#test-openrouter-connection').on('click', function(e) {
+            e.preventDefault();
+            var $button = $(this);
+            var $indicator = $('#openrouter-status-indicator');
+            var apiKey = $('input[name="openrouter_api_key"]').val();
+            var model = $('select[name="openrouter_model_fast"]').val();
+            $button.prop('disabled', true).html('<span class="dashicons dashicons-update dashicons-spin" style="vertical-align:middle;margin-top:3px;"></span> Testing...');
+            $indicator.html('<span style="color:#666;">…</span>');
+            $.ajax({
+                url: mindfulseoAdmin.ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'mindfulseo_test_openrouter',
+                    nonce: mindfulseoAdmin.nonces.test_api,
+                    api_key: apiKey,
+                    model: model
+                },
+                success: function(response) {
+                    if (response.success) {
+                        $indicator.html('<span style="color:#46b450;font-weight:600;">OK (' + response.data.response_time + 'ms)</span>');
+                    } else {
+                        $indicator.html('<span style="color:#dc3232;">' + response.data.message + '</span>');
+                    }
+                },
+                error: function() {
+                    $indicator.html('<span style="color:#dc3232;">Request failed</span>');
+                },
+                complete: function() {
+                    $button.prop('disabled', false).html(
+                        '<span class="dashicons dashicons-admin-plugins" style="vertical-align:middle;margin-top:3px;"></span> Test Connection'
+                    );
+                }
+            });
+        });
         
         // Auto-clear status indicators when user changes values
         $('input[name="openai_api_key"], select[name="openai_model"]').on('change', function() {
@@ -1174,7 +1265,7 @@
         var isAscending = !$th.hasClass('sorted-asc');
         var isGroupedTable = $table.hasClass('mfseo-keyword-table');
         
-        var isNumericColumn = ['search_volume', 'keyword_difficulty', 'cpc', 'volume', 'difficulty'].indexOf(sortBy) !== -1;
+        var isNumericColumn = ['search_volume', 'keyword_difficulty', 'cpc', 'volume', 'difficulty', 'priority'].indexOf(sortBy) !== -1;
         
         $table.find('.sortable').removeClass('sorted-asc sorted-desc');
         $table.find('.sortable .dashicons').removeClass('dashicons-arrow-up dashicons-arrow-down').addClass('dashicons-sort');

@@ -21,6 +21,7 @@ class MFSEO_AJAX_Handlers {
         // API testing
         add_action('wp_ajax_mindfulseo_test_openai', array(__CLASS__, 'test_openai_connection'));
         add_action('wp_ajax_mindfulseo_test_claude', array(__CLASS__, 'test_claude_connection'));
+        add_action('wp_ajax_mindfulseo_test_openrouter', array(__CLASS__, 'test_openrouter_connection'));
         add_action('wp_ajax_mindfulseo_test_both', array(__CLASS__, 'test_both_connections'));
         add_action('wp_ajax_mindfulseo_test_dataforseo', array(__CLASS__, 'test_dataforseo_connection'));
         
@@ -171,6 +172,37 @@ class MFSEO_AJAX_Handlers {
             wp_send_json_success($result);
         }
     }
+
+    /**
+     * Test OpenRouter via AJAX
+     */
+    public static function test_openrouter_connection() {
+        ob_start();
+        check_ajax_referer('mindfulseo_test_api', 'nonce');
+        if (!current_user_can('manage_options')) {
+            ob_end_clean();
+            wp_send_json_error(array('message' => __('Unauthorized', 'mindfulseo')));
+        }
+        $api_key = isset($_POST['api_key']) ? sanitize_text_field($_POST['api_key']) : '';
+        $model   = isset($_POST['model']) ? sanitize_text_field($_POST['model']) : 'qwen/qwen3.5-flash-02-23';
+        if (empty($api_key) || strpos($api_key, '•') !== false) {
+            $settings = get_option('mindfulseo_settings', array());
+            $api_key  = isset($settings['openrouter_api_key']) ? $settings['openrouter_api_key'] : '';
+            if (!empty($api_key) && class_exists('MFSEO_AI_Connector')) {
+                $api_key = MFSEO_AI_Connector::get_instance()->decrypt_api_key($api_key);
+            }
+        }
+        if (empty($api_key)) {
+            ob_end_clean();
+            wp_send_json_error(array('message' => __('No OpenRouter key. Save Settings first.', 'mindfulseo')));
+        }
+        $result = MFSEO_API_Tester::test_openrouter_connection($api_key, $model);
+        ob_end_clean();
+        if (is_wp_error($result)) {
+            wp_send_json_error(array('message' => $result->get_error_message(), 'code' => $result->get_error_code()));
+        }
+        wp_send_json_success($result);
+    }
     
     /**
      * Test both connections via AJAX
@@ -288,50 +320,47 @@ class MFSEO_AJAX_Handlers {
         $limit = isset($_POST['limit']) ? intval($_POST['limit']) : 100;
         
         try {
+            $guidelines_engine = class_exists('MFSEO_Guidelines_Engine') ? MFSEO_Guidelines_Engine::get_instance() : null;
+            if (!$guidelines_engine) {
+                wp_send_json_error(array('message' => __('Guidelines engine not available.', 'mindfulseo')));
+            }
+
+            $manual_gl = $guidelines_engine->get_editor_policy_snapshot_text();
+            $wizard_gl_payload = '';
+            if ($manual_gl !== '') {
+                $wizard_gl_payload = "=== USER-DEFINED AND IMPORTED RULES (authoritative — never contradict; extend with complementary rules only) ===\n" . $manual_gl;
+            }
+
             $analyzer = new MFSEO_Content_Analyzer();
             $suggestions = $analyzer->analyze_for_guidelines(array(
                 'post_types' => $post_types,
                 'limit' => $limit,
+                'wizard_guidelines_snapshot' => $wizard_gl_payload,
                 'ai_usage_context' => 'guidelines_page_autogenerate',
             ));
-            
+
             if (is_wp_error($suggestions)) {
                 wp_send_json_error(array('message' => $suggestions->get_error_message()));
             }
-            
+
             if (empty($suggestions)) {
                 wp_send_json_error(array(
                     'message' => __('No patterns found. Try analyzing more posts or different post types.', 'mindfulseo')
                 ));
             }
-            
-            $guidelines_engine = class_exists('MFSEO_Guidelines_Engine') ? MFSEO_Guidelines_Engine::get_instance() : null;
-            if (!$guidelines_engine) {
-                wp_send_json_error(array('message' => __('Guidelines engine not available.', 'mindfulseo')));
-            }
-            
+
             $imported = 0;
 
-            // Match Language Guidelines → Auto-Generate (form POST in class-admin-page.php):
-            // pattern capitalize first, then full AI mix (avoid / capitalize / preferred_term / seo_friendly),
-            // then pattern fallbacks only when AI did not return rules.
-
-            if (!empty($suggestions['capitalize_terms'])) {
-                foreach ($suggestions['capitalize_terms'] as $term) {
-                    $result = $guidelines_engine->add_rule(array(
-                        'rule_type' => 'capitalize',
-                        'avoid_term' => strtolower($term),
-                        'preferred_term' => $term,
-                        'context' => 'Auto-generated from content analysis',
-                        'guideline_source' => 'Auto-generated',
-                        'active' => true,
-                    ));
-                    if (!is_wp_error($result)) {
-                        $imported++;
+            $ai_cap_lower = array();
+            if (!empty($suggestions['ai_guidelines'])) {
+                foreach ($suggestions['ai_guidelines'] as $ar) {
+                    if (isset($ar['type']) && $ar['type'] === 'capitalize' && !empty($ar['preferred'])) {
+                        $ai_cap_lower[strtolower($ar['preferred'])] = true;
                     }
                 }
             }
 
+            // AI-generated guidelines first
             if (!empty($suggestions['ai_guidelines'])) {
                 $ai_rule_types = array('avoid_term', 'capitalize', 'preferred_term', 'seo_friendly');
                 foreach ($suggestions['ai_guidelines'] as $ai_rule) {
@@ -358,6 +387,34 @@ class MFSEO_AJAX_Handlers {
                     ));
                     if (!is_wp_error($result)) {
                         $imported++;
+                    }
+                }
+            }
+
+            // Pattern capitalize after AI, capped
+            if (!empty($suggestions['capitalize_terms'])) {
+                $ai_ok = !empty($suggestions['ai_succeeded']);
+                $max_pat = $ai_ok ? 10 : 28;
+                $added_pat = 0;
+                foreach ($suggestions['capitalize_terms'] as $term) {
+                    if ($added_pat >= $max_pat) {
+                        break;
+                    }
+                    $low = strtolower($term);
+                    if ($ai_ok && isset($ai_cap_lower[$low])) {
+                        continue;
+                    }
+                    $result = $guidelines_engine->add_rule(array(
+                        'rule_type' => 'capitalize',
+                        'avoid_term' => $low,
+                        'preferred_term' => $term,
+                        'context' => 'Auto-generated from content analysis',
+                        'guideline_source' => 'Auto-generated',
+                        'active' => true,
+                    ));
+                    if (!is_wp_error($result)) {
+                        $imported++;
+                        $added_pat++;
                     }
                 }
             }

@@ -17,12 +17,19 @@ class MFSEO_OpenAI_Provider {
     /**
      * API key
      */
-    private $api_key;
+    protected $api_key;
     
     /**
      * API endpoint
      */
-    private $api_endpoint = 'https://api.openai.com/v1/chat/completions';
+    protected $api_endpoint = 'https://api.openai.com/v1/chat/completions';
+
+    /**
+     * Extra HTTP headers (e.g. OpenRouter Referer / X-Title).
+     *
+     * @var array<string, string>
+     */
+    protected $extra_request_headers = array();
     
     /**
      * Default model — reads from saved settings so it respects the user's choice
@@ -32,7 +39,7 @@ class MFSEO_OpenAI_Provider {
     /**
      * Load default model from plugin settings
      */
-    private function get_default_model() {
+    protected function get_default_model() {
         $settings = get_option( 'mindfulseo_settings', array() );
         return ! empty( $settings['openai_model'] ) ? $settings['openai_model'] : $this->default_model;
     }
@@ -56,6 +63,43 @@ class MFSEO_OpenAI_Provider {
         }
         return ( $input_tokens / 1000 * $in_rate ) + ( $output_tokens / 1000 * $out_rate );
     }
+
+    /**
+     * OpenRouter USD estimate (filterable; conservative defaults by vendor prefix).
+     */
+    public static function estimate_openrouter_usd( $model, $input_tokens, $output_tokens ) {
+        $model_l = strtolower( (string) $model );
+        $in_rate  = 0.0005;
+        $out_rate = 0.002;
+        if ( strpos( $model_l, 'qwen' ) !== false ) {
+            $in_rate = 0.0002;
+            $out_rate = 0.0008;
+        } elseif ( strpos( $model_l, 'minimax' ) !== false ) {
+            $in_rate = 0.0004;
+            $out_rate = 0.0016;
+        }
+        $rates = apply_filters(
+            'mfseo_openrouter_cost_per_1k',
+            array( 'in' => $in_rate, 'out' => $out_rate ),
+            $model
+        );
+        $in_r = isset( $rates['in'] ) ? (float) $rates['in'] : $in_rate;
+        $out_r = isset( $rates['out'] ) ? (float) $rates['out'] : $out_rate;
+        return ( $input_tokens / 1000 * $in_r ) + ( $output_tokens / 1000 * $out_r );
+    }
+
+    /**
+     * @param string $model
+     * @param int    $input_tokens
+     * @param int    $output_tokens
+     * @return float
+     */
+    protected function estimate_usage_cost_for_endpoint( $model, $input_tokens, $output_tokens ) {
+        if ( strpos( $this->api_endpoint, 'openrouter.ai' ) !== false ) {
+            return self::estimate_openrouter_usd( $model, $input_tokens, $output_tokens );
+        }
+        return $this->estimate_cost( $model, $input_tokens, $output_tokens );
+    }
     
     /**
      * Available models
@@ -68,10 +112,34 @@ class MFSEO_OpenAI_Provider {
     ];
     
     /**
-     * Constructor
+     * Constructor.
+     *
+     * @param string      $api_key API key (OpenAI or OpenRouter).
+     * @param string|null $endpoint_override Chat completions URL, or null for OpenAI.
+     * @param array       $extra_headers Optional headers merged after Content-Type and Authorization.
      */
-    public function __construct($api_key) {
+    public function __construct($api_key, $endpoint_override = null, $extra_headers = array()) {
         $this->api_key = $api_key;
+        if (is_string($endpoint_override) && $endpoint_override !== '') {
+            $this->api_endpoint = $endpoint_override;
+        }
+        if (is_array($extra_headers) && $extra_headers !== array()) {
+            $this->extra_request_headers = $extra_headers;
+        }
+    }
+
+    /**
+     * Provider label for status UIs.
+     */
+    public function get_name() {
+        return strpos($this->api_endpoint, 'openrouter.ai') !== false ? 'OpenRouter' : 'OpenAI';
+    }
+
+    /**
+     * Default model id for this provider instance.
+     */
+    public function get_model() {
+        return $this->get_default_model();
     }
     
     /**
@@ -136,14 +204,20 @@ class MFSEO_OpenAI_Provider {
             'temperature' => $temperature,
         ];
         
+        $headers = array_merge(
+            array(
+                'Content-Type'  => 'application/json',
+                'Authorization' => 'Bearer ' . $this->api_key,
+            ),
+            $this->extra_request_headers
+        );
+
         // Make API request
         $response = wp_remote_post($this->api_endpoint, [
-            'headers' => [
-                'Content-Type' => 'application/json',
-                'Authorization' => 'Bearer ' . $this->api_key,
-            ],
-            'body' => json_encode($body),
+            'headers' => $headers,
+            'body' => wp_json_encode($body, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE),
             'timeout' => 60,
+            'httpversion' => '1.1',
         ]);
         
         // Handle errors
@@ -175,11 +249,16 @@ class MFSEO_OpenAI_Provider {
         }
         
         // Log usage to the MindfulSEO cost tracker
-        if ( isset( $data['usage'] ) && class_exists( 'MFSEO_Logger' ) ) {
-            $input_tokens  = isset( $data['usage']['prompt_tokens'] )     ? (int) $data['usage']['prompt_tokens']     : 0;
-            $output_tokens = isset( $data['usage']['completion_tokens'] ) ? (int) $data['usage']['completion_tokens'] : 0;
-            $cost = $this->estimate_cost( $model, $input_tokens, $output_tokens );
-            MFSEO_Logger::get_instance()->log_api_call( 'openai', $input_tokens, $output_tokens, $cost, $model, $usage_context );
+        if ( class_exists( 'MFSEO_Logger' ) ) {
+            $_mfseo_log = strpos($this->api_endpoint, 'openrouter.ai') !== false ? 'openrouter' : 'openai';
+            $norm = isset( $data['usage'] ) ? MFSEO_Logger::normalize_usage_tokens( $data['usage'] ) : null;
+            $call_kind = ( strpos( $usage_context, 'connection_test' ) !== false ) ? 'connection_test' : 'production';
+            if ( $norm === null ) {
+                MFSEO_Logger::get_instance()->log_api_call( $_mfseo_log, 0, 0, 0, $model, $usage_context, $call_kind, 'usage_missing' );
+            } else {
+                $cost = $this->estimate_usage_cost_for_endpoint( $model, $norm['in'], $norm['out'] );
+                MFSEO_Logger::get_instance()->log_api_call( $_mfseo_log, $norm['in'], $norm['out'], $cost, $model, $usage_context, $call_kind );
+            }
         }
 
         return $data;

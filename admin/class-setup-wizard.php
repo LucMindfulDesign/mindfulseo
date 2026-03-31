@@ -95,35 +95,38 @@ class MFSEO_Setup_Wizard {
      * Step 1: Choose AI Provider
      */
     private function render_step_1($settings) {
+        $ai_backend  = isset($settings['ai_backend']) ? $settings['ai_backend'] : 'direct';
         $ai_provider = isset($settings['ai_provider']) ? $settings['ai_provider'] : 'openai';
+        if ($ai_backend === 'openrouter') {
+            $wizard_ai = 'openrouter';
+        } else {
+            $wizard_ai = in_array($ai_provider, array('openai', 'claude'), true) ? $ai_provider : 'openai';
+        }
+        $or_model = isset($settings['openrouter_model']) ? $settings['openrouter_model'] : 'qwen/qwen3.5-flash-02-23';
         ?>
-        <div class="mfseo-wizard-step" id="wizard-step-1" style="display: block;">
+        <div class="mfseo-wizard-step" id="wizard-step-1" style="display: block;" data-ai-panel="<?php echo esc_attr( $wizard_ai ); ?>">
             <h3><?php _e('Connect Your AI Provider', 'mindfulseo'); ?></h3>
-            <p><?php _e('MindfulSEO uses AI to optimize your content. Choose a provider and enter your API key.', 'mindfulseo'); ?></p>
-            
-            <div class="mfseo-wizard-providers">
-                <label class="mfseo-wizard-provider-card <?php echo $ai_provider === 'openai' ? 'active' : ''; ?>">
-                    <input type="radio" name="ai_provider" value="openai" <?php checked($ai_provider, 'openai'); ?>>
-                    <div class="provider-content">
-                        <h4>OpenAI (ChatGPT)</h4>
-                        <p><?php _e('Recommended - Most powerful results', 'mindfulseo'); ?></p>
-                    </div>
+            <p><?php _e('MindfulSEO uses AI to optimize your content. Pick how you connect, then enter your API key.', 'mindfulseo'); ?></p>
+            <div class="mfseo-wizard-step1-credentials">
+
+
+            <div class="mfseo-wizard-ai-connection">
+                <label for="mfseo_wizard_ai" class="mfseo-wizard-ai-connection-label">
+                    <strong><?php esc_html_e('AI connection', 'mindfulseo'); ?></strong>
                 </label>
-                
-                <label class="mfseo-wizard-provider-card <?php echo $ai_provider === 'claude' ? 'active' : ''; ?>">
-                    <input type="radio" name="ai_provider" value="claude" <?php checked($ai_provider, 'claude'); ?>>
-                    <div class="provider-content">
-                        <h4>Anthropic Claude</h4>
-                        <p><?php _e('Great alternative - Detailed analysis', 'mindfulseo'); ?></p>
-                    </div>
-                </label>
+                <select id="mfseo_wizard_ai" name="mfseo_wizard_ai" class="mfseo-wizard-select widefat">
+                    <option value="openai" <?php selected($wizard_ai, 'openai'); ?>><?php esc_html_e('OpenAI (ChatGPT)', 'mindfulseo'); ?></option>
+                    <option value="claude" <?php selected($wizard_ai, 'claude'); ?>><?php esc_html_e('Anthropic Claude', 'mindfulseo'); ?></option>
+                    <option value="openrouter" <?php selected($wizard_ai, 'openrouter'); ?>><?php esc_html_e('OpenRouter (many models, one key)', 'mindfulseo'); ?></option>
+                </select>
+                <p class="description mfseo-wizard-ai-connection-hint"><?php esc_html_e( 'OpenAI and Claude use each vendor\'s API directly. OpenRouter routes requests through openrouter.ai (you can add fallback keys later in Settings).', 'mindfulseo' ); ?></p>
             </div>
-            
-            <div class="mfseo-wizard-api-config" id="openai-config" style="display: <?php echo $ai_provider === 'openai' ? 'block' : 'none'; ?>;">
+
+            <div class="mfseo-wizard-api-config" id="openai-config">
                 <label>
                     <strong><?php _e('OpenAI API Key', 'mindfulseo'); ?></strong>
                     <input type="password" name="openai_api_key" value="<?php echo esc_attr(isset($settings['openai_api_key']) ? $settings['openai_api_key'] : ''); ?>" class="mfseo-wizard-input" placeholder="sk-...">
-                    <a href="https://platform.openai.com/api-keys" target="_blank"><?php _e('Get your API key', 'mindfulseo'); ?> &rarr;</a>
+                    <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"><?php _e('Get your API key', 'mindfulseo'); ?> &rarr;</a>
                 </label>
                 <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary test-api-btn" data-provider="openai">
                     <span class="dashicons dashicons-yes"></span>
@@ -131,12 +134,12 @@ class MFSEO_Setup_Wizard {
                 </button>
                 <div class="api-test-result"></div>
             </div>
-            
-            <div class="mfseo-wizard-api-config" id="claude-config" style="display: <?php echo $ai_provider === 'claude' ? 'block' : 'none'; ?>;">
+
+            <div class="mfseo-wizard-api-config" id="claude-config">
                 <label>
                     <strong><?php _e('Claude API Key', 'mindfulseo'); ?></strong>
                     <input type="password" name="claude_api_key" value="<?php echo esc_attr(isset($settings['claude_api_key']) ? $settings['claude_api_key'] : ''); ?>" class="mfseo-wizard-input" placeholder="sk-ant-...">
-                    <a href="https://console.anthropic.com/" target="_blank"><?php _e('Get your API key', 'mindfulseo'); ?> &rarr;</a>
+                    <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer"><?php _e('Get your API key', 'mindfulseo'); ?> &rarr;</a>
                 </label>
                 <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary test-api-btn" data-provider="claude">
                     <span class="dashicons dashicons-yes"></span>
@@ -144,7 +147,31 @@ class MFSEO_Setup_Wizard {
                 </button>
                 <div class="api-test-result"></div>
             </div>
-            
+
+            <div class="mfseo-wizard-api-config" id="openrouter-config">
+                <label>
+                    <strong><?php esc_html_e('OpenRouter API Key', 'mindfulseo'); ?></strong>
+                    <input type="password" name="openrouter_api_key" value="<?php echo esc_attr(isset($settings['openrouter_api_key']) ? $settings['openrouter_api_key'] : ''); ?>" class="mfseo-wizard-input" placeholder="sk-or-...">
+                    <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer"><?php esc_html_e('Get your API key', 'mindfulseo'); ?> &rarr;</a>
+                </label>
+                <label class="mfseo-wizard-openrouter-model-label">
+                    <strong><?php esc_html_e('Model', 'mindfulseo'); ?></strong>
+                    <select id="wizard-openrouter-model" name="openrouter_model" class="mfseo-wizard-select widefat">
+                        <option value="qwen/qwen3.5-flash-02-23" <?php selected($or_model, 'qwen/qwen3.5-flash-02-23'); ?>>Qwen 3.5 Flash</option>
+                        <option value="qwen/qwen3.5-35b-a3b" <?php selected($or_model, 'qwen/qwen3.5-35b-a3b'); ?>>Qwen 3.5 35B A3B</option>
+                        <option value="minimax/minimax-m2.5" <?php selected($or_model, 'minimax/minimax-m2.5'); ?>>MiniMax M2.5</option>
+                        <option value="minimax/minimax-m2" <?php selected($or_model, 'minimax/minimax-m2'); ?>>MiniMax M2</option>
+                    </select>
+                </label>
+                <p class="description"><?php esc_html_e('You can fine-tune fast models and more in Settings after setup.', 'mindfulseo'); ?></p>
+                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary test-api-btn" data-provider="openrouter">
+                    <span class="dashicons dashicons-yes"></span>
+                    <?php _e('Test Connection', 'mindfulseo'); ?>
+                </button>
+                <div class="api-test-result"></div>
+            </div>
+            </div>
+
             <div class="mfseo-wizard-actions">
                 <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-1-next">
                     <?php _e('Continue', 'mindfulseo'); ?> &rarr;
@@ -246,6 +273,181 @@ class MFSEO_Setup_Wizard {
     }
 
     /**
+     * Posts for wizard step 4: prefer not yet applied as MindfulSEO-optimized
+     * (_mindfulseo_optimized on apply in class-optimizer.php), then fill from recent posts.
+     *
+     * @param int $limit Max posts to return.
+     * @return WP_Post[]
+     */
+    private function get_wizard_quick_optimize_candidates( $limit = 5 ) {
+        $limit = max( 1, (int) $limit );
+
+        $not_applied = get_posts(
+            array(
+                'post_type'              => array( 'post', 'page' ),
+                'post_status'            => 'publish',
+                'posts_per_page'         => $limit,
+                'orderby'                => 'date',
+                'order'                  => 'DESC',
+                'no_found_rows'          => true,
+                'update_post_meta_cache' => false,
+                'update_post_term_cache' => false,
+                'meta_query'             => array(
+                    'relation' => 'OR',
+                    array(
+                        'key'     => '_mindfulseo_optimized',
+                        'compare' => 'NOT EXISTS',
+                    ),
+                    array(
+                        'key'     => '_mindfulseo_optimized',
+                        'value'   => '1',
+                        'compare' => '!=',
+                        'type'    => 'CHAR',
+                    ),
+                ),
+            )
+        );
+
+        $ids  = wp_list_pluck( $not_applied, 'ID' );
+        $need = $limit - count( $not_applied );
+        if ( $need > 0 ) {
+            $fill = get_posts(
+                array(
+                    'post_type'              => array( 'post', 'page' ),
+                    'post_status'            => 'publish',
+                    'posts_per_page'         => $need,
+                    'orderby'                => 'date',
+                    'order'                  => 'DESC',
+                    'post__not_in'           => $ids,
+                    'no_found_rows'          => true,
+                    'update_post_meta_cache' => false,
+                    'update_post_term_cache' => false,
+                )
+            );
+            $not_applied = array_merge( $not_applied, $fill );
+        }
+
+        return $not_applied;
+    }
+
+    /**
+     * Drop AI keyword rows that duplicate anything already in DB (wizard extend-only safety).
+     *
+     * Setup wizard: target count for AI-only suggestions (separate from imports; imports are never modified).
+     * With preserved rows: 30–50 scaled by import volume. Cold start (nothing to preserve): ~60.
+     *
+     * @param int $preserved_count Preservable keyword or guideline rows before AI refresh.
+     * @return int Cap for extra AI rows/rules in this run.
+     */
+    private function get_wizard_ai_suggestion_cap( $preserved_count ) {
+        $n = max( 0, (int) $preserved_count );
+        if ( $n === 0 ) {
+            return 60;
+        }
+        $extra = (int) round( 20 * min( 1.0, $n / 100.0 ) );
+
+        return min( 50, max( 30, 30 + $extra ) );
+    }
+
+    /**
+     * @param array               $suggestions Parsed suggestions from analyzer.
+     * @param MFSEO_Keyword_Manager $keyword_manager Keyword manager.
+     * @return array
+     */
+    private function filter_wizard_new_keyword_suggestions( $suggestions, $keyword_manager ) {
+        if ( empty( $suggestions ) || ! is_array( $suggestions ) ) {
+            return array();
+        }
+        $rows = $keyword_manager->get_keywords( array( 'limit' => 999999, 'orderby' => 'primary_keyword', 'order' => 'ASC' ) );
+        $seen = array();
+        foreach ( $rows as $row ) {
+            $pk = function_exists( 'mb_strtolower' ) ? mb_strtolower( trim( (string) $row->primary_keyword ), 'UTF-8' ) : strtolower( trim( (string) $row->primary_keyword ) );
+            $lt = function_exists( 'mb_strtolower' ) ? mb_strtolower( trim( (string) $row->longtail_keyword ), 'UTF-8' ) : strtolower( trim( (string) $row->longtail_keyword ) );
+            $seen[ $pk . "\x1e" . $lt ] = true;
+        }
+        $out = array();
+        foreach ( $suggestions as $s ) {
+            if ( empty( $s['primary_keyword'] ) || empty( $s['longtail_keyword'] ) ) {
+                continue;
+            }
+            $pk = function_exists( 'mb_strtolower' ) ? mb_strtolower( trim( (string) $s['primary_keyword'] ), 'UTF-8' ) : strtolower( trim( (string) $s['primary_keyword'] ) );
+            $lt = function_exists( 'mb_strtolower' ) ? mb_strtolower( trim( (string) $s['longtail_keyword'] ), 'UTF-8' ) : strtolower( trim( (string) $s['longtail_keyword'] ) );
+            $key = $pk . "\x1e" . $lt;
+            if ( isset( $seen[ $key ] ) ) {
+                continue;
+            }
+            $seen[ $key ] = true;
+            $out[] = $s;
+        }
+        return $out;
+    }
+
+    /**
+     * When extending imports, reserve most rows for NEW primary topics; cap longtails on existing primaries.
+     *
+     * @param array    $suggestions Flat AI rows (primary + longtail each).
+     * @param object[] $pres_kw     Preservable keyword rows (define "imported" primaries).
+     * @param int      $cap         Row budget for this run.
+     * @return array
+     */
+    private function balance_wizard_extend_keyword_suggestions( $suggestions, $pres_kw, $cap ) {
+        if ( empty( $suggestions ) || ! is_array( $suggestions ) || $cap < 1 ) {
+            return is_array( $suggestions ) ? array_slice( $suggestions, 0, $cap ) : array();
+        }
+        $auth = array();
+        foreach ( $pres_kw as $row ) {
+            if ( ! is_object( $row ) || ! isset( $row->primary_keyword ) ) {
+                continue;
+            }
+            $pk = trim( (string) $row->primary_keyword );
+            if ( $pk === '' ) {
+                continue;
+            }
+            $k = function_exists( 'mb_strtolower' ) ? mb_strtolower( $pk, 'UTF-8' ) : strtolower( $pk );
+            $auth[ $k ] = true;
+        }
+        if ( empty( $auth ) ) {
+            return array_slice( $suggestions, 0, $cap );
+        }
+        $max_on_existing = max( 2, min( 14, (int) ceil( $cap * 0.26 ) ) );
+        $on_new          = array();
+        $on_existing     = array();
+        foreach ( $suggestions as $s ) {
+            if ( empty( $s['primary_keyword'] ) ) {
+                continue;
+            }
+            $pk = function_exists( 'mb_strtolower' )
+                ? mb_strtolower( trim( (string) $s['primary_keyword'] ), 'UTF-8' )
+                : strtolower( trim( (string) $s['primary_keyword'] ) );
+            if ( isset( $auth[ $pk ] ) ) {
+                $on_existing[] = $s;
+            } else {
+                $on_new[] = $s;
+            }
+        }
+        $out           = array();
+        $existing_used = 0;
+        foreach ( $on_new as $s ) {
+            if ( count( $out ) >= $cap ) {
+                break;
+            }
+            $out[] = $s;
+        }
+        foreach ( $on_existing as $s ) {
+            if ( count( $out ) >= $cap ) {
+                break;
+            }
+            if ( $existing_used >= $max_on_existing ) {
+                break;
+            }
+            $out[] = $s;
+            $existing_used++;
+        }
+
+        return $out;
+    }
+
+    /**
      * Capture keyword + guideline text before wizard regeneration (for AI improvement context).
      *
      * @return array{keywords: string, guidelines: string}
@@ -256,12 +458,13 @@ class MFSEO_Setup_Wizard {
         if ( class_exists( 'MFSEO_Keyword_Manager' ) ) {
             $km    = MFSEO_Keyword_Manager::get_instance();
             $lines = array();
-            foreach ( $km->get_keywords( array( 'limit' => 200 ) ) as $row ) {
+            foreach ( $km->get_keywords( array( 'limit' => 5000, 'orderby' => 'priority', 'order' => 'ASC' ) ) as $row ) {
                 $lines[] = sprintf(
-                    '- %s | %s (%s)',
+                    '- %s | %s | %s | priority: %s',
                     $row->primary_keyword,
                     $row->longtail_keyword,
-                    $row->search_intent
+                    $row->search_intent,
+                    $row->priority
                 );
             }
             $kw_text = implode( "\n", $lines );
@@ -278,20 +481,34 @@ class MFSEO_Setup_Wizard {
                     $rule->preferred_term
                 );
             }
-            $gl_text = implode( "\n", array_slice( $lines, 0, 200 ) );
+            $gl_text = implode( "\n", $lines );
         }
-        $max_snap = 12000;
-        if ( strlen( $kw_text ) > $max_snap ) {
-            $kw_text = substr( $kw_text, 0, $max_snap ) . "\n[…]";
+        $max_kw = 24000;
+        $max_gl = 24000;
+        if ( strlen( $kw_text ) > $max_kw ) {
+            $kw_text = substr( $kw_text, 0, $max_kw ) . "\n[…]";
         }
-        if ( strlen( $gl_text ) > $max_snap ) {
-            $gl_text = substr( $gl_text, 0, $max_snap ) . "\n[…]";
+        if ( strlen( $gl_text ) > $max_gl ) {
+            $gl_text = substr( $gl_text, 0, $max_gl ) . "\n[…]";
         }
 
         return array(
             'keywords'   => $kw_text,
             'guidelines' => $gl_text,
         );
+    }
+
+    /**
+     * Guidelines from non-auto sources only (imports, manual) for AI context.
+     * Always passed when regenerating so editor policy is not dropped when "Use saved" is off.
+     *
+     * @return string
+     */
+    private function get_manual_guidelines_snapshot_text() {
+        if ( ! class_exists( 'MFSEO_Guidelines_Engine' ) ) {
+            return '';
+        }
+        return MFSEO_Guidelines_Engine::get_instance()->get_editor_policy_snapshot_text( 24000, 8000 );
     }
 
     /**
@@ -304,30 +521,28 @@ class MFSEO_Setup_Wizard {
         $counts    = $this->get_existing_strategy_counts();
         $has_saved = ( $counts['keywords'] + $counts['guidelines'] ) > 0;
         ?>
-        <div class="mfseo-wizard-step" id="wizard-step-3" style="display: none;" data-has-saved="<?php echo $has_saved ? '1' : '0'; ?>">
+        <div class="mfseo-wizard-step" id="wizard-step-3" style="display: none;" data-prestart-strategy="<?php echo $has_saved ? '1' : '0'; ?>">
             <h3><?php _e('Analyze Your Content', 'mindfulseo'); ?></h3>
             <p><?php _e('Choose how to set up your keyword strategy and language guidelines: use data you already have, add or edit it yourself, or let AI scan your site and generate everything.', 'mindfulseo'); ?></p>
 
+            <?php if ( $has_saved ) : ?>
             <div class="mfseo-wizard-saved-summary">
-                <?php if ( $has_saved ) : ?>
+                <p id="wizard-saved-summary-line">
                     <?php printf(
                         /* translators: 1: keyword count, 2: guideline count */
-                        __( 'You already have %1$s keywords and %2$s language guidelines in MindfulSEO.', 'mindfulseo' ),
+                        __( 'You have %1$s keywords and %2$s language guidelines saved in MindfulSEO.', 'mindfulseo' ),
                         number_format_i18n( $counts['keywords'] ),
                         number_format_i18n( $counts['guidelines'] )
                     ); ?>
-                <?php else : ?>
-                    <p class="mfseo-wizard-saved-summary-intro"><?php _e( 'No keywords or guidelines are stored yet — run AI analysis or import files below.', 'mindfulseo' ); ?></p>
-                <?php endif; ?>
+                </p>
             </div>
 
-            <?php if ( $has_saved ) : ?>
-            <div class="mfseo-wizard-saved-controls">
+            <div id="wizard-saved-full-controls" class="mfseo-wizard-saved-controls">
                 <div class="mfseo-wizard-use-saved-toggle-wrap" id="wizard-use-saved-wrap">
                     <div class="mfseo-wizard-use-saved-head">
-                        <span class="mfseo-wizard-use-saved-title"><?php esc_html_e( 'Use saved keywords & guidelines', 'mindfulseo' ); ?></span>
+                        <span class="mfseo-wizard-use-saved-title"><?php esc_html_e( 'Use imported & saved strategy as AI context', 'mindfulseo' ); ?></span>
                         <label class="mfseo-wizard-toggle" for="wizard-use-saved">
-                            <input type="checkbox" id="wizard-use-saved" class="mfseo-wizard-toggle-input" role="switch" checked="checked" aria-label="<?php esc_attr_e( 'Use saved keywords and guidelines as context for AI analysis', 'mindfulseo' ); ?>" />
+                            <input type="checkbox" id="wizard-use-saved" class="mfseo-wizard-toggle-input" role="switch" <?php checked( true ); ?> aria-label="<?php esc_attr_e( 'Pass imported and saved keywords and guidelines to AI when analyzing', 'mindfulseo' ); ?>" />
                             <span class="mfseo-wizard-toggle-ui" aria-hidden="true">
                                 <span class="mfseo-wizard-toggle-caption mfseo-wizard-toggle-caption--off"><?php esc_html_e( 'Off', 'mindfulseo' ); ?></span>
                                 <span class="mfseo-wizard-toggle-track">
@@ -349,7 +564,7 @@ class MFSEO_Setup_Wizard {
                             <?php esc_html_e( 'Regenerate language guidelines', 'mindfulseo' ); ?>
                         </label>
                     </div>
-                    <p class="mfseo-wizard-saved-controls-footnote"><?php esc_html_e( '“Use saved” sends your current strategy as context; AI still runs a full analysis and writes improved keyword and guideline entries. Turn it off to pick which areas to regenerate without that context.', 'mindfulseo' ); ?></p>
+                    <p class="mfseo-wizard-saved-controls-footnote"><?php esc_html_e( 'When on, your saved keywords and guidelines are sent to the AI as context; auto-generated entries are then refreshed. Turn off to choose only keywords or only guidelines without tying regeneration options together.', 'mindfulseo' ); ?></p>
                 </div>
             </div>
             <?php endif; ?>
@@ -401,6 +616,9 @@ class MFSEO_Setup_Wizard {
                         </div>
                     </div>
                 </div>
+                <p class="mfseo-wizard-analyze-note mfseo-wizard-analyze-note--save-first" style="font-size: 12px; color: #475569; margin-top: 10px;">
+                    <?php esc_html_e( 'Imports: click Import to save immediately, or leave a file selected and run Analyze Content — files are written to the database first (same behavior as Keyword Strategy and Language Guidelines → Import).', 'mindfulseo' ); ?>
+                </p>
                 
                 <?php if ($total > 0) : ?>
                     <p class="mfseo-wizard-analyze-note">
@@ -515,18 +733,13 @@ class MFSEO_Setup_Wizard {
      * Step 4: Quick Optimize
      */
     private function render_step_4() {
-        $recent_posts = get_posts(array(
-            'post_type' => array('post', 'page'),
-            'posts_per_page' => 5,
-            'post_status' => 'publish',
-            'orderby' => 'date',
-            'order' => 'DESC'
-        ));
+        $recent_posts = $this->get_wizard_quick_optimize_candidates( 5 );
         ?>
         <div class="mfseo-wizard-step" id="wizard-step-4" style="display: none;">
             <h3><?php _e('Optimize Your First Posts', 'mindfulseo'); ?></h3>
             <p><?php _e('See MindfulSEO in action. Select a few posts and the AI will optimize their SEO metadata.', 'mindfulseo'); ?></p>
-            
+            <p class="description"><?php esc_html_e( 'Suggestions favor posts not yet applied as optimized in MindfulSEO (newest published first). If everything published is already optimized, recent posts are shown instead.', 'mindfulseo' ); ?></p>
+
             <div id="wizard-posts-selection">
                 <?php if (empty($recent_posts)) : ?>
                     <p class="mfseo-wizard-no-posts"><?php _e('No published content found. You can optimize posts later from the Batch Optimizer.', 'mindfulseo'); ?></p>
@@ -604,9 +817,12 @@ class MFSEO_Setup_Wizard {
         $connector = class_exists('MFSEO_AI_Connector') ? MFSEO_AI_Connector::get_instance() : null;
         
         foreach ($data as $key => $value) {
-            $value = sanitize_text_field($value);
+            if (!is_string($value)) {
+                continue;
+            }
+            $value = sanitize_text_field(wp_unslash($value));
             
-            if (in_array($key, array('openai_api_key', 'claude_api_key'), true)) {
+            if (in_array($key, array('openai_api_key', 'claude_api_key', 'openrouter_api_key'), true)) {
                 if (!empty($value) && $connector) {
                     $settings[$key] = $connector->encrypt_api_key($value);
                 } elseif (!empty($value)) {
@@ -616,8 +832,22 @@ class MFSEO_Setup_Wizard {
                 $settings[$key] = $value;
             }
         }
+
+        /*
+         * Wizard step 1 stores the user's vendor choice as ai_provider.
+         * MFSEO_AI_Connector::initialize_providers() uses primary_provider for Direct mode — keep them aligned
+         * so choosing Claude in the wizard does not still route requests to OpenAI first.
+         */
+        if ( $step === 1 && isset( $settings['ai_backend'] ) && $settings['ai_backend'] === 'direct'
+            && isset( $settings['ai_provider'] ) && in_array( $settings['ai_provider'], array( 'openai', 'claude' ), true ) ) {
+            $settings['primary_provider'] = $settings['ai_provider'];
+        }
         
         update_option('mindfulseo_settings', $settings);
+
+        if ($step === 1 && isset($settings['ai_backend']) && $settings['ai_backend'] === 'openrouter') {
+            delete_transient('mfseo_provider_down_openrouter');
+        }
         update_option('mindfulseo_wizard_state', array('step' => $step));
         
         wp_send_json_success(array('step' => $step));
@@ -682,6 +912,12 @@ class MFSEO_Setup_Wizard {
         } elseif ($provider === 'claude') {
             $model  = ! empty($settings['claude_model']) ? sanitize_text_field($settings['claude_model']) : 'claude-sonnet-4-5';
             $result = MFSEO_API_Tester::test_claude_connection($api_key, $model);
+        } elseif ($provider === 'openrouter') {
+            $model = isset($_POST['model']) ? sanitize_text_field(wp_unslash($_POST['model'])) : '';
+            if ($model === '') {
+                $model = ! empty($settings['openrouter_model']) ? sanitize_text_field($settings['openrouter_model']) : 'qwen/qwen3.5-flash-02-23';
+            }
+            $result = MFSEO_API_Tester::test_openrouter_connection($api_key, $model);
         } else {
             wp_send_json_error(__('Invalid provider', 'mindfulseo'));
             return;
@@ -732,42 +968,76 @@ class MFSEO_Setup_Wizard {
             );
         }
 
-        $keywords_imported = 0;
-        $guidelines_imported = 0;
-        $errors = array();
+        $keywords_imported     = 0;
+        $guidelines_imported   = 0;
+        $errors                = array();
+        $kw_preservation_count = 0;
+        $gl_preservation_count = 0;
+        $restored_kw           = 0;
+        $restored_gl           = 0;
         
         // --- Generate Keywords ---
         if ( $regenerate_keywords ) {
             if ( class_exists( 'MFSEO_Content_Analyzer' ) && class_exists( 'MFSEO_Keyword_Manager' ) ) {
                 $keyword_manager = MFSEO_Keyword_Manager::get_instance();
+                $pres_kw                  = $keyword_manager->get_preservable_keyword_rows();
+                $kw_preservation_count    = count( $pres_kw );
+                $kw_ai_cap                = $this->get_wizard_ai_suggestion_cap( $kw_preservation_count );
                 $keyword_manager->delete_keywords_by_source( 'Auto-generated' );
+
+                $kw_snapshot_for_ai = '';
+                if ( $use_saved_context && $snapshots['keywords'] !== '' ) {
+                    $kw_snapshot_for_ai = $snapshots['keywords'];
+                } else {
+                    $kw_after = $this->get_strategy_snapshot_texts();
+                    $kw_snapshot_for_ai = $kw_after['keywords'];
+                }
 
                 $analyzer = new MFSEO_Content_Analyzer();
 
                 $suggestions = $analyzer->analyze_for_keywords( array(
                     'post_types' => array( 'post', 'page' ),
                     'deep_analysis' => $deep_analysis,
-                    'wizard_saved_snapshot' => $use_saved_context ? $snapshots['keywords'] : '',
+                    'wizard_saved_snapshot' => $kw_snapshot_for_ai,
+                    'wizard_preservable_keyword_count' => count( $pres_kw ),
+                    'wizard_extend_only_keywords' => $kw_preservation_count > 0,
+                    'wizard_max_extra_keyword_rows' => $kw_ai_cap,
+                    'wizard_total_keyword_cap' => $kw_preservation_count > 0 ? 0 : $kw_ai_cap,
                     'ai_usage_context' => 'setup_wizard_keywords',
                 ) );
 
                 if ( is_wp_error( $suggestions ) ) {
                     $errors[] = $suggestions->get_error_message();
-                } elseif ( ! empty( $suggestions ) ) {
-                    foreach ( $suggestions as $suggestion ) {
-                        $result = $keyword_manager->add_keyword( array(
-                            'primary_keyword' => $suggestion['primary_keyword'],
-                            'longtail_keyword' => $suggestion['longtail_keyword'],
-                            'search_intent' => $suggestion['search_intent'],
-                            'priority' => $suggestion['priority'],
-                            'current_sessions' => isset( $suggestion['frequency'] ) ? $suggestion['frequency'] : 0,
-                            'notes' => 'Auto-generated from setup wizard',
-                            'csv_source' => 'Auto-generated',
-                        ) );
-                        if ( ! is_wp_error( $result ) ) {
-                            $keywords_imported++;
-                        }
+                } else {
+                    if ( is_array( $suggestions ) && $kw_preservation_count > 0 ) {
+                        $suggestions = $this->filter_wizard_new_keyword_suggestions( $suggestions, $keyword_manager );
+                        $suggestions = $this->balance_wizard_extend_keyword_suggestions( $suggestions, $pres_kw, $kw_ai_cap );
                     }
+                    if ( ! empty( $suggestions ) ) {
+                        foreach ( $suggestions as $suggestion ) {
+                            $result = $keyword_manager->add_keyword( array(
+                                'primary_keyword' => $suggestion['primary_keyword'],
+                                'longtail_keyword' => $suggestion['longtail_keyword'],
+                                'search_intent' => $suggestion['search_intent'],
+                                'priority' => $suggestion['priority'],
+                                'current_sessions' => isset( $suggestion['frequency'] ) ? $suggestion['frequency'] : 0,
+                                'notes' => 'Auto-generated from setup wizard',
+                                'csv_source' => 'Auto-generated',
+                            ) );
+                            if ( ! is_wp_error( $result ) ) {
+                                $keywords_imported++;
+                            }
+                        }
+                    } elseif ( $kw_preservation_count === 0 && is_array( $suggestions ) ) {
+                        $errors[] = __(
+                            'Keyword AI returned no rows we could import (often fixed by running Analyze again, enabling deep analysis, or checking the API model output in MindfulSEO → Settings → Usage). Your imported keywords, if any, are unchanged.',
+                            'mindfulseo'
+                        );
+                    }
+                }
+                $restored_kw = $keyword_manager->reinsert_missing_keywords( $pres_kw );
+                if ( $restored_kw > 0 ) {
+                    error_log( 'MindfulSEO wizard: restored ' . (int) $restored_kw . ' keyword row(s); check API response wizard_preservation.' );
                 }
             } else {
                 $errors[] = 'Content Analyzer or Keyword Manager not available.';
@@ -778,52 +1048,89 @@ class MFSEO_Setup_Wizard {
         if ($regenerate_guidelines) {
             if (class_exists('MFSEO_Content_Analyzer') && class_exists('MFSEO_Guidelines_Engine')) {
                 $guidelines_engine = MFSEO_Guidelines_Engine::get_instance();
+                $pres_gl                  = $guidelines_engine->get_preservable_guideline_rows();
+                $gl_preservation_count    = count( $pres_gl );
+                $gl_ai_cap                = $this->get_wizard_ai_suggestion_cap( $gl_preservation_count );
+                $pre_delete_snapshots    = $this->get_strategy_snapshot_texts();
+                $manual_guidelines_text  = $this->get_manual_guidelines_snapshot_text();
+
+                $wizard_gl_payload = '';
+                if ( $manual_guidelines_text !== '' ) {
+                    $wizard_gl_payload = "=== USER-DEFINED AND IMPORTED RULES (authoritative — never contradict; extend with complementary rules only) ===\n" . $manual_guidelines_text;
+                }
+                if ( $pre_delete_snapshots['guidelines'] !== '' ) {
+                    $wizard_gl_payload .= ( $wizard_gl_payload !== '' ? "\n\n" : '' ) . "=== FULL SAVED GUIDELINES SNAPSHOT (pre-refresh) ===\n" . $pre_delete_snapshots['guidelines'];
+                }
+
                 $guidelines_engine->delete_rules_by_source('Auto-generated');
                 $guidelines_engine->delete_rules_by_source('AI-generated');
-                
+
                 $analyzer = new MFSEO_Content_Analyzer();
-            
-            $suggestions = $analyzer->analyze_for_guidelines(array(
-                'post_types' => array( 'post', 'page' ),
-                'deep_analysis' => $deep_analysis,
-                'wizard_guidelines_snapshot' => $use_saved_context ? $snapshots['guidelines'] : '',
-                'ai_usage_context' => 'setup_wizard_guidelines',
-            ));
-            
-            if (!empty($suggestions)) {
-                if (!empty($suggestions['ai_error'])) {
-                    $errors[] = 'AI semantic guidelines failed: ' . $suggestions['ai_error'];
-                }
-                
-                // Pattern-based capitalize rules (always used as supplementary)
-                if (!empty($suggestions['capitalize_terms'])) {
-                    foreach ($suggestions['capitalize_terms'] as $term) {
-                        $result = $guidelines_engine->add_rule(array(
-                            'rule_type' => 'capitalize',
-                            'avoid_term' => strtolower($term),
-                            'preferred_term' => $term,
-                            'context' => 'Auto-generated from setup wizard',
-                            'guideline_source' => 'Auto-generated',
-                            'active' => true,
-                        ));
-                        if (!is_wp_error($result)) {
-                            $guidelines_imported++;
+
+                $suggestions = $analyzer->analyze_for_guidelines(array(
+                    'post_types' => array( 'post', 'page' ),
+                    'deep_analysis' => $deep_analysis,
+                    'wizard_guidelines_snapshot' => $wizard_gl_payload,
+                    'wizard_preservable_guideline_count' => count( $pres_gl ),
+                    'wizard_extend_only_guidelines' => $gl_preservation_count > 0,
+                    'wizard_max_extra_guidelines' => $gl_ai_cap,
+                    'ai_usage_context' => 'setup_wizard_guidelines',
+                ));
+
+                if ( ! empty( $suggestions ) ) {
+                    $g_scale = max( 0.5, min( 2.0, $gl_ai_cap / 30.0 ) );
+                    if ( ! empty( $suggestions['ai_guidelines'] ) ) {
+                        $suggestions['ai_guidelines'] = array_slice( $suggestions['ai_guidelines'], 0, $gl_ai_cap );
+                    }
+                    if ( ! empty( $suggestions['capitalize_terms'] ) ) {
+                        $capMax = max( 8, min( 22, (int) round( 8 * $g_scale ) ) );
+                        if ( $gl_preservation_count > 0 ) {
+                            $capMax = min( $capMax, 6 );
+                        }
+                        $suggestions['capitalize_terms'] = array_slice( $suggestions['capitalize_terms'], 0, $capMax );
+                    }
+                    if ( empty( $suggestions['ai_succeeded'] ) ) {
+                        if ( ! empty( $suggestions['avoid_terms'] ) ) {
+                            $avoidMax = max( 12, min( 28, (int) round( 12 * $g_scale ) ) );
+                            $suggestions['avoid_terms'] = array_slice( $suggestions['avoid_terms'], 0, $avoidMax );
+                        }
+                        if ( ! empty( $suggestions['common_phrases'] ) ) {
+                            $phraseMax = max( 6, min( 16, (int) round( 6 * $g_scale ) ) );
+                            $suggestions['common_phrases'] = array_slice( $suggestions['common_phrases'], 0, $phraseMax );
+                        }
+                        if ( ! empty( $suggestions['semantic_avoid_terms'] ) ) {
+                            $semMax = max( 8, min( 20, (int) round( 8 * $g_scale ) ) );
+                            $suggestions['semantic_avoid_terms'] = array_slice( $suggestions['semantic_avoid_terms'], 0, $semMax );
                         }
                     }
                 }
-                
-                // AI-generated guidelines (all types: avoid_term, capitalize, preferred_term, seo_friendly)
+
+                if (!empty($suggestions)) {
+                if (!empty($suggestions['ai_error'])) {
+                    $errors[] = 'AI semantic guidelines failed: ' . $suggestions['ai_error'];
+                }
+
+                $ai_cap_lower = array();
+                if (!empty($suggestions['ai_guidelines'])) {
+                    foreach ($suggestions['ai_guidelines'] as $ar) {
+                        if (isset($ar['type']) && $ar['type'] === 'capitalize' && !empty($ar['preferred'])) {
+                            $ai_cap_lower[ strtolower( $ar['preferred'] ) ] = true;
+                        }
+                    }
+                }
+
+                // AI-generated guidelines first (all types)
                 if (!empty($suggestions['ai_guidelines'])) {
                     foreach ($suggestions['ai_guidelines'] as $ai_rule) {
                         $rule_type = $ai_rule['type'];
                         $avoid = isset($ai_rule['avoid']) ? $ai_rule['avoid'] : '';
                         $preferred = $ai_rule['preferred'];
                         $context = !empty($ai_rule['context']) ? $ai_rule['context'] : 'AI-generated';
-                        
+
                         if ($rule_type === 'capitalize' && empty($avoid)) {
                             $avoid = strtolower($preferred);
                         }
-                        
+
                         $result = $guidelines_engine->add_rule(array(
                             'rule_type' => $rule_type,
                             'avoid_term' => $avoid,
@@ -837,7 +1144,43 @@ class MFSEO_Setup_Wizard {
                         }
                     }
                 }
-                
+
+                // Pattern-based capitalize: capped; after AI; skip duplicates of AI capitalize
+                if (!empty($suggestions['capitalize_terms'])) {
+                    $ai_ok = !empty($suggestions['ai_succeeded']);
+                    if ( $gl_preservation_count > 0 ) {
+                        $max_pat = $ai_ok
+                            ? max( 4, min( 10, (int) round( $gl_ai_cap * 0.22 ) ) )
+                            : max( 24, min( 40, (int) round( $gl_ai_cap * 0.48 ) ) );
+                    } else {
+                        $max_pat = $ai_ok
+                            ? max( 10, min( 24, (int) round( $gl_ai_cap * 0.38 ) ) )
+                            : max( 24, min( 40, (int) round( $gl_ai_cap * 0.48 ) ) );
+                    }
+                    $added_pat = 0;
+                    foreach ($suggestions['capitalize_terms'] as $term) {
+                        if ($added_pat >= $max_pat) {
+                            break;
+                        }
+                        $low = strtolower($term);
+                        if ($ai_ok && isset($ai_cap_lower[$low])) {
+                            continue;
+                        }
+                        $result = $guidelines_engine->add_rule(array(
+                            'rule_type' => 'capitalize',
+                            'avoid_term' => $low,
+                            'preferred_term' => $term,
+                            'context' => 'Auto-generated from setup wizard',
+                            'guideline_source' => 'Auto-generated',
+                            'active' => true,
+                        ));
+                        if (!is_wp_error($result)) {
+                            $guidelines_imported++;
+                            $added_pat++;
+                        }
+                    }
+                }
+
                 // Fallback: pattern-based rules only when AI didn't succeed
                 if (empty($suggestions['ai_succeeded'])) {
                     if (!empty($suggestions['avoid_terms'])) {
@@ -889,6 +1232,10 @@ class MFSEO_Setup_Wizard {
                     }
                 }
             }
+                $restored_gl = $guidelines_engine->reinsert_missing_guidelines( $pres_gl );
+                if ( $restored_gl > 0 ) {
+                    error_log( 'MindfulSEO wizard: restored ' . (int) $restored_gl . ' guideline row(s); check API response wizard_preservation.' );
+                }
             } else {
                 $errors[] = 'Guidelines Engine not available.';
             }
@@ -896,11 +1243,17 @@ class MFSEO_Setup_Wizard {
         
         $totals = $this->get_existing_strategy_counts();
         wp_send_json_success(array(
-            'keywords_count' => $keywords_imported,
-            'guidelines_count' => $guidelines_imported,
-            'keywords_total' => $totals['keywords'],
-            'guidelines_total' => $totals['guidelines'],
-            'errors' => $errors,
+            'keywords_count'     => $keywords_imported,
+            'guidelines_count'   => $guidelines_imported,
+            'keywords_total'     => $totals['keywords'],
+            'guidelines_total'   => $totals['guidelines'],
+            'errors'             => $errors,
+            'wizard_preservation' => array(
+                'keywords_protected'     => $kw_preservation_count,
+                'keywords_restored'      => $restored_kw,
+                'guidelines_protected'   => $gl_preservation_count,
+                'guidelines_restored'    => $restored_gl,
+            ),
         ));
     }
     
@@ -919,74 +1272,42 @@ class MFSEO_Setup_Wizard {
             wp_send_json_error('Required classes not available');
         }
         
-        $importer = new MFSEO_CSV_Importer();
-        $upload = $importer->upload_csv($_FILES['csv_file']);
-        
-        if (is_wp_error($upload)) {
-            wp_send_json_error($upload->get_error_message());
-        }
-        
-        $data = $importer->parse_csv($upload['filepath']);
-        
-        if (is_wp_error($data)) {
-            wp_send_json_error($data->get_error_message());
-        }
-        
-        if (empty($data)) {
-            wp_send_json_error('No valid rows found in the CSV file');
-        }
-        
         $keyword_manager = MFSEO_Keyword_Manager::get_instance();
-        $imported = 0;
-        $skipped = 0;
-        $duplicates = 0;
-        
-        foreach ($data as $row) {
-            $primary = isset($row['PRIMARY KEYWORD']) ? trim($row['PRIMARY KEYWORD']) : '';
-            if (empty($primary)) {
-                $skipped++;
-                continue;
-            }
-            
-            $longtail = isset($row['LONGTAIL KEYWORD']) ? trim($row['LONGTAIL KEYWORD']) : '';
-            if (empty($longtail)) {
-                $longtail = strtolower($primary) . ' guide';
-            }
-            
-            $result = $keyword_manager->add_keyword(array(
-                'primary_keyword' => $primary,
-                'longtail_keyword' => $longtail,
-                'search_intent' => isset($row['SEARCH INTENT']) ? $row['SEARCH INTENT'] : 'Informational',
-                'priority' => isset($row['PRIORITY']) ? strtoupper($row['PRIORITY']) : 'MEDIUM',
-                'notes' => 'Imported from CSV via setup wizard',
-                'csv_source' => 'CSV Import',
-            ));
-            if (!is_wp_error($result)) {
-                $imported++;
-            } else {
-                if ($result->get_error_code() === 'duplicate_keyword') {
-                    $duplicates++;
-                }
-                $skipped++;
-            }
+        $kw_csv_source   = ! empty( $_FILES['csv_file']['name'] )
+            ? sanitize_file_name( wp_unslash( $_FILES['csv_file']['name'] ) )
+            : 'import.csv';
+
+        $result = $keyword_manager->import_csv(
+            $_FILES['csv_file'],
+            array(
+                'wizard_merge' => true,
+                'csv_source'   => $kw_csv_source,
+            )
+        );
+
+        if (is_wp_error($result)) {
+            wp_send_json_error($result->get_error_message());
         }
-        
-        @unlink($upload['filepath']);
-        
-        $msg = $imported . ' keywords imported';
-        if ($duplicates > 0) {
-            $msg .= ', ' . $duplicates . ' duplicates skipped';
-        }
-        if ($skipped > $duplicates) {
-            $msg .= ', ' . ($skipped - $duplicates) . ' invalid rows skipped';
-        }
-        
+
+        $imported = isset($result['imported']) ? (int) $result['imported'] : 0;
+        $updated  = isset($result['updated'] ) ? (int) $result['updated']  : 0;
+        $skipped = isset($result['skipped']) ? (int) $result['skipped'] : 0;
+        $total = isset($result['total']) ? (int) $result['total'] : 0;
+
+        $msg = sprintf(
+            /* translators: 1: new rows, 2: updated rows, 3: skipped */
+            __( '%1$d keywords added, %2$d updated from file (%3$d skipped or empty rows)', 'mindfulseo' ),
+            $imported,
+            $updated,
+            $skipped
+        );
+
         $totals = $this->get_existing_strategy_counts();
         wp_send_json_success(array(
             'imported' => $imported,
             'skipped' => $skipped,
-            'duplicates' => $duplicates,
-            'total' => count($data),
+            'duplicates' => 0,
+            'total' => $total,
             'message' => $msg,
             'keywords_total' => $totals['keywords'],
             'guidelines_total' => $totals['guidelines'],
@@ -1016,7 +1337,8 @@ class MFSEO_Setup_Wizard {
         }
         
         $guidelines_engine = MFSEO_Guidelines_Engine::get_instance();
-        $is_markdown = in_array($ext, array('md', 'markdown'));
+        $gl_source_name    = sanitize_file_name( wp_unslash( $file['name'] ) );
+        $is_markdown       = in_array( $ext, array( 'md', 'markdown' ) );
         
         // Auto-detect: if .txt, peek at content to decide format
         if ($ext === 'txt') {
@@ -1041,12 +1363,12 @@ class MFSEO_Setup_Wizard {
             $imported = 0;
             $skipped = 0;
             foreach ($parsed_rules as $rule) {
-                $result = $guidelines_engine->add_rule(array(
+                $result = $guidelines_engine->upsert_rule_wizard_import(array(
                     'rule_type' => $rule['rule_type'],
                     'avoid_term' => isset($rule['avoid_term']) ? $rule['avoid_term'] : '',
                     'preferred_term' => $rule['preferred_term'],
                     'context' => isset($rule['context']) ? $rule['context'] : 'Imported via setup wizard',
-                    'guideline_source' => 'Wizard Import (Markdown)',
+                    'guideline_source' => $gl_source_name,
                     'active' => true,
                 ));
                 if (!is_wp_error($result)) {
@@ -1108,12 +1430,12 @@ class MFSEO_Setup_Wizard {
                 continue;
             }
             
-            $result = $guidelines_engine->add_rule(array(
+            $result = $guidelines_engine->upsert_rule_wizard_import(array(
                 'rule_type' => $rule_type,
                 'avoid_term' => isset($data['AVOID TERM']) ? $data['AVOID TERM'] : (isset($data['AVOID FROM']) ? $data['AVOID FROM'] : ''),
                 'preferred_term' => isset($data['PREFERRED TERM']) ? $data['PREFERRED TERM'] : (isset($data['PREFERRED TO']) ? $data['PREFERRED TO'] : ''),
                 'context' => isset($data['CONTEXT']) ? $data['CONTEXT'] : 'Imported from CSV via setup wizard',
-                'guideline_source' => 'Wizard Import (CSV)',
+                'guideline_source' => $gl_source_name,
                 'active' => true,
             ));
             

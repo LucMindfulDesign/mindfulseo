@@ -248,7 +248,8 @@ class MFSEO_CSV_Importer {
             foreach ($normalized_header as $index => $column) {
                 $row_data[$column] = isset($row[$index]) ? trim($row[$index]) : '';
             }
-            
+            $this->merge_priority_aliases($row_data);
+
             // Validate row
             $validation = $this->validate_row($row_data, $row_number);
             if (is_wp_error($validation)) {
@@ -273,11 +274,34 @@ class MFSEO_CSV_Importer {
         return $data;
     }
     
+
+    /**
+     * If PRIORITY column is empty, use common alternate header values (same row).
+     *
+     * @param array $row_data Row keyed by normalized headers.
+     */
+    private function merge_priority_aliases(array &$row_data) {
+        if (!empty($row_data['PRIORITY'])) {
+            return;
+        }
+        $aliases = array('KEYWORD PRIORITY', 'PRIORITY LEVEL', 'IMPORTANCE', 'TIER');
+        foreach ($aliases as $key) {
+            if (!empty($row_data[$key])) {
+                $row_data['PRIORITY'] = $row_data[$key];
+                return;
+            }
+        }
+    }
+
     /**
      * Normalize a CSV header name to the canonical form.
      * Handles variations like "Primary Keyword", "primary_keyword", "primary keyword".
      */
     private function normalize_header($header) {
+        $header = is_string($header) ? $header : '';
+        if (strncmp($header, "\xEF\xBB\xBF", 3) === 0) {
+            $header = substr($header, 3);
+        }
         $header = strtoupper(trim($header));
         $header = str_replace(array('_', '-'), ' ', $header);
         $header = preg_replace('/\s+/', ' ', $header);
@@ -359,24 +383,34 @@ class MFSEO_CSV_Importer {
     /**
      * Import data to database
      *
-     * @param array $data Parsed CSV data
-     * @param string $source_filename Original filename
+     * @param array  $data Parsed CSV data
+     * @param string $source_filename Original filename (default csv_source when not overridden)
+     * @param array  $options Optional: merge_duplicates — update rows that match primary+longtail (wizard).
+     *                        csv_source — value stored on each row (e.g. Wizard Import (CSV)).
      * @return array|WP_Error Import statistics or error
      */
-    public function import_to_database($data, $source_filename) {
+    public function import_to_database($data, $source_filename, $options = array()) {
         global $wpdb;
         
         $table_name = $wpdb->prefix . 'mindfulseo_keywords';
         
         $imported = 0;
-        $skipped = 0;
-        $errors = array();
+        $updated  = 0;
+        $skipped  = 0;
+        $errors   = array();
+        $merge    = ! empty( $options['merge_duplicates'] );
+        $csv_src  = ! empty( $options['csv_source'] )
+            ? sanitize_text_field( $options['csv_source'] )
+            : sanitize_text_field( $source_filename );
         
         foreach ($data as $row) {
             $primary = sanitize_text_field(isset($row['PRIMARY KEYWORD']) ? $row['PRIMARY KEYWORD'] : '');
             $longtail = sanitize_text_field(isset($row['LONGTAIL KEYWORD']) ? $row['LONGTAIL KEYWORD'] : ($primary . ' guide'));
             $intent = sanitize_text_field(isset($row['SEARCH INTENT']) ? $row['SEARCH INTENT'] : 'Informational');
-            $priority = strtoupper(sanitize_text_field(isset($row['PRIORITY']) ? $row['PRIORITY'] : 'MEDIUM'));
+            $priority_raw = isset($row['PRIORITY']) ? $row['PRIORITY'] : 'MEDIUM';
+            $priority = class_exists('MFSEO_Keyword_Manager') ?
+                MFSEO_Keyword_Manager::get_instance()->normalize_keyword_priority($priority_raw) :
+                strtoupper(sanitize_text_field($priority_raw));
             
             if (empty($primary)) {
                 $skipped++;
@@ -390,7 +424,30 @@ class MFSEO_CSV_Importer {
             ));
             
             if ($existing) {
-                $skipped++;
+                if ($merge) {
+                    $sessions = isset($row['CURRENT SESSIONS']) ? intval($row['CURRENT SESSIONS']) : 0;
+                    $notes    = isset($row['NOTES']) ? sanitize_textarea_field($row['NOTES']) : '';
+                    $ok       = $wpdb->update(
+                        $table_name,
+                        array(
+                            'search_intent'    => $intent,
+                            'priority'         => $priority,
+                            'current_sessions' => $sessions,
+                            'notes'            => $notes,
+                            'csv_source'       => $csv_src,
+                        ),
+                        array('id' => (int) $existing),
+                        array('%s', '%s', '%d', '%s', '%s'),
+                        array('%d')
+                    );
+                    if ($ok !== false) {
+                        $updated++;
+                    } else {
+                        $errors[] = $wpdb->last_error;
+                    }
+                } else {
+                    $skipped++;
+                }
                 continue;
             }
             
@@ -403,7 +460,7 @@ class MFSEO_CSV_Importer {
                     'priority' => $priority,
                     'current_sessions' => isset($row['CURRENT SESSIONS']) ? intval($row['CURRENT SESSIONS']) : 0,
                     'notes' => isset($row['NOTES']) ? sanitize_textarea_field($row['NOTES']) : '',
-                    'csv_source' => sanitize_text_field($source_filename),
+                    'csv_source' => $csv_src,
                     'created_date' => current_time('mysql'),
                 ),
                 array('%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s')
@@ -423,6 +480,7 @@ class MFSEO_CSV_Importer {
                 $logger->log_info('CSV import completed', array(
                     'source' => $source_filename,
                     'imported' => $imported,
+                    'updated' => $updated,
                     'skipped' => $skipped,
                     'errors' => count($errors)
                 ));
@@ -431,6 +489,7 @@ class MFSEO_CSV_Importer {
         
         return array(
             'imported' => $imported,
+            'updated' => $updated,
             'skipped' => $skipped,
             'errors' => $errors,
             'total' => count($data)

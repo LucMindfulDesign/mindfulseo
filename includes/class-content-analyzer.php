@@ -149,6 +149,10 @@ class MFSEO_Content_Analyzer {
             'use_ai' => true,
             'deep_analysis' => false,
             'wizard_saved_snapshot' => '',
+            'wizard_preservable_keyword_count' => 0,
+            'wizard_extend_only_keywords' => false,
+            'wizard_max_extra_keyword_rows' => 30,
+            'wizard_total_keyword_cap' => 0,
             'ai_usage_context' => '',
         );
         
@@ -392,15 +396,34 @@ class MFSEO_Content_Analyzer {
         if (!empty($options['wizard_saved_snapshot'])) {
             $context['wizard_saved_snapshot'] = $options['wizard_saved_snapshot'];
         }
-        
+        if ( isset( $options['wizard_preservable_keyword_count'] ) ) {
+            $context['wizard_preservable_keyword_count'] = (int) $options['wizard_preservable_keyword_count'];
+        }
+        if ( ! empty( $options['wizard_extend_only_keywords'] ) ) {
+            $context['wizard_extend_only_keywords']      = true;
+            $context['wizard_max_extra_keyword_rows']   = isset( $options['wizard_max_extra_keyword_rows'] )
+                ? max( 1, (int) $options['wizard_max_extra_keyword_rows'] )
+                : 30;
+        }
+        if ( ! empty( $options['ai_usage_context'] ) && $options['ai_usage_context'] === 'setup_wizard_keywords' ) {
+            $context['wizard_setup_keyword_sizing'] = true;
+        }
+        if ( ! empty( $options['wizard_total_keyword_cap'] ) ) {
+            $context['wizard_total_keyword_cap'] = max( 1, (int) $options['wizard_total_keyword_cap'] );
+        }
+
         $prompt = $this->build_keyword_generation_prompt($content_samples, $context);
         
         $ai_connector = MFSEO_AI_Connector::get_instance();
         $kw_ctx = ! empty( $options['ai_usage_context'] ) ? $options['ai_usage_context'] : 'content_analyzer_keywords';
+        $max_kw_tokens = 6000;
+        if ( $kw_ctx === 'setup_wizard_keywords' ) {
+            $max_kw_tokens = $deep ? 16000 : 12000;
+        }
         $response = $ai_connector->generate_content($prompt, array(
             'timeout' => $deep ? 180 : 120,
             'temperature' => 0.3,
-            'max_tokens' => 6000,
+            'max_tokens' => $max_kw_tokens,
             'fast_model' => !$deep,
             'usage_context' => $kw_ctx,
         ));
@@ -412,11 +435,33 @@ class MFSEO_Content_Analyzer {
         
         $keywords = $this->parse_ai_keyword_response($response);
         
-        if (empty($keywords)) {
+        if ( empty( $keywords ) ) {
+            if ( ! empty( $options['wizard_extend_only_keywords'] ) ) {
+                return array();
+            }
+            if ( ! empty( $options['ai_usage_context'] ) && $options['ai_usage_context'] === 'setup_wizard_keywords' ) {
+                error_log(
+                    'MindfulSEO wizard: keyword AI returned 0 parseable rows (often truncated JSON or alternate field names). Response length: '
+                    . strlen( (string) $response ) . ' preview: ' . substr( (string) $response, 0, 400 )
+                );
+                return array();
+            }
             error_log('MindfulSEO: AI returned no parseable keywords. Response: ' . substr($response, 0, 500));
             return new WP_Error('ai_parse_failed', 'AI returned no parseable keywords. Please try again or check your API key.');
         }
         
+        $slice_cap = 0;
+        if ( ! empty( $options['wizard_extend_only_keywords'] ) && ! empty( $options['wizard_max_extra_keyword_rows'] ) ) {
+            $slice_cap = max( 1, (int) $options['wizard_max_extra_keyword_rows'] );
+        } elseif ( ! empty( $options['wizard_total_keyword_cap'] )
+            && ! empty( $options['ai_usage_context'] )
+            && $options['ai_usage_context'] === 'setup_wizard_keywords' ) {
+            $slice_cap = max( 1, (int) $options['wizard_total_keyword_cap'] );
+        }
+        if ( $slice_cap > 0 && count( $keywords ) > $slice_cap ) {
+            $keywords = array_slice( $keywords, 0, $slice_cap );
+        }
+
         return $keywords;
     }
     
@@ -428,8 +473,12 @@ class MFSEO_Content_Analyzer {
      * @return string Prompt
      */
     private function build_keyword_generation_prompt($samples, $context) {
-        $site_name = get_bloginfo('name');
-        $site_description = get_bloginfo('description');
+        if ( ! empty( $context['wizard_extend_only_keywords'] ) ) {
+            return $this->build_wizard_extend_keyword_prompt( $samples, $context );
+        }
+
+        $site_name             = get_bloginfo( 'name' );
+        $site_description      = get_bloginfo( 'description' );
         $site_url = get_site_url();
         
         $all_titles = !empty($context['all_titles']) ? $context['all_titles'] : array();
@@ -450,9 +499,18 @@ class MFSEO_Content_Analyzer {
         $prompt .= "URL: {$site_url}\n";
         $prompt .= "Total published posts: {$context['post_count']}\n\n";
 
-        if (!empty($context['wizard_saved_snapshot'])) {
-            $prompt .= "=== PREVIOUS SAVED KEYWORD STRATEGY (from database — IMPROVE: produce a stronger, more complete set; keep useful themes, fix gaps and redundancy) ===\n";
+        $rw_kw = isset( $context['wizard_preservable_keyword_count'] ) ? max( 0, (int) $context['wizard_preservable_keyword_count'] ) : 0;
+        if ( ! empty( $context['wizard_saved_snapshot'] ) ) {
+            $prompt .= "=== PREVIOUS SAVED KEYWORD STRATEGY (from database — user/imported rows are authoritative) ===\n";
             $prompt .= $this->truncate_for_ai_prompt( $context['wizard_saved_snapshot'], 12000 ) . "\n\n";
+            $prompt .= 'MANDATORY: Every DISTINCT primary_keyword + longtail_keyword pair in the block above MUST appear again in your JSON with the EXACT same strings. Output those pairs first. ';
+            if ( $rw_kw > 0 ) {
+                $prompt .= "REINFORCEMENT MODE: {$rw_kw} such rows already exist in the database — they are sacred. After reproducing every listed pair, add at most 16 NEW primary_keyword objects (each with longtails) only for real gaps — no paraphrases or near-duplicates of saved primaries.\n\n";
+            } else {
+                $prompt .= "Then add NEW primary/longtail pairs only where they reinforce coverage. Never drop or rephrase a saved pair.\n\n";
+            }
+        } elseif ( $rw_kw > 0 ) {
+                $prompt .= "REINFORCEMENT MODE: This site already has {$rw_kw} saved keyword rows (manual, CSV, or wizard). Treat them as fixed; your JSON must include every such primary+longtail pair exactly as stored (match the live strategy). Then add at most 16 NEW primary objects for gaps only.\n\n";
         }
 
         if (!empty($context['homepage_content'])) {
@@ -526,7 +584,21 @@ class MFSEO_Content_Analyzer {
         
         $prompt .= "=== KEYWORD GENERATION RULES ===\n\n";
 
-        $prompt .= "Generate 15-20 PRIMARY keywords covering ALL aspects of this site. Quality over quantity.\n\n";
+        $has_saved_kw = ! empty( $context['wizard_saved_snapshot'] ) || $rw_kw > 0;
+        $wizard_kw_cap = ! empty( $context['wizard_setup_keyword_sizing'] ) && ! empty( $context['wizard_total_keyword_cap'] )
+            ? (int) $context['wizard_total_keyword_cap']
+            : 0;
+        if ( ! $has_saved_kw ) {
+            $prompt .= "FULL GENERATION: No imported or manual keyword rows exist yet. Propose a complete strategy from site evidence below.\n\n";
+            if ( $wizard_kw_cap > 0 ) {
+                $lo = max( 45, $wizard_kw_cap - 10 );
+                $prompt .= "SETUP WIZARD: Aim for roughly {$lo}–{$wizard_kw_cap} longtail_keyword ROWS total across all primaries (each longtail counts as one row). Stop sooner if evidence is thin; do not pad. Imports are absent here, so you are building the initial AI layer only.\n\n";
+            } else {
+                $prompt .= "Generate 15-20 PRIMARY keywords covering ALL aspects of this site. Quality over quantity.\n\n";
+            }
+        } else {
+            $prompt .= "Satisfy the MANDATORY block above first. For any NEW primary clusters you add (after saved pairs), use the category guidance below — do not replace user/imported pairs.\n\n";
+        }
 
         $prompt .= "MANDATORY CATEGORIES (must have keywords in EACH):\n\n";
 
@@ -569,115 +641,276 @@ class MFSEO_Content_Analyzer {
         
         return $prompt;
     }
+
+    /**
+     * Setup wizard: user already imported/saved keywords — AI adds only NEW longtail rows (capped), never replaces inputs.
+     *
+     * @param array $samples Content samples.
+     * @param array $context Must include wizard_saved_snapshot, wizard_max_extra_keyword_rows.
+     * @return string
+     */
+    private function build_wizard_extend_keyword_prompt( $samples, $context ) {
+        $site_name        = get_bloginfo( 'name' );
+        $site_description = get_bloginfo( 'description' );
+        $site_url         = get_site_url();
+        $cap = isset( $context['wizard_max_extra_keyword_rows'] ) ? (int) $context['wizard_max_extra_keyword_rows'] : 30;
+        $cap = max( 1, min( 80, $cap ) );
+        $aim_lo = max( 1, $cap - 15 );
+        // At most this many OUTPUT longtail rows may use a primary that already exists in the import; the rest must be NEW primaries.
+        $max_on_imported_primaries = max( 2, min( 14, (int) ceil( $cap * 0.26 ) ) );
+        $min_new_primaries         = max( 3, min( 20, (int) round( $cap * 0.35 ) ) );
+
+        $all_titles = ! empty( $context['all_titles'] ) ? $context['all_titles'] : array();
+        $entities   = $this->extract_site_entities( $samples, $all_titles );
+        $this->detected_entities = $entities;
+
+        $prompt  = "You are an SEO assistant in EXTEND-ONLY mode for a site that ALREADY has an authoritative keyword list (CSV/import).\n\n";
+        $prompt .= "Those rows are ALREADY in the database and are SACRED: never repeat them, never rephrase them, never replace them. Your output is ONLY additional NEW longtail rows that complement them.\n\n";
+        $prompt .= "=== WEBSITE ===\nName: {$site_name}\n";
+        if ( ! empty( $site_description ) ) {
+            $prompt .= "Tagline: {$site_description}\n";
+        }
+        $prompt .= "URL: {$site_url}\n";
+        $prompt .= "Published content count: {$context['post_count']}\n\n";
+
+        if ( ! empty( $context['wizard_saved_snapshot'] ) ) {
+            $prompt .= "=== AUTHORITATIVE KEYWORDS (already saved — duplicate NONE of these primary+longtail pairs) ===\n";
+            $prompt .= $this->truncate_for_ai_prompt( $context['wizard_saved_snapshot'], 12000 ) . "\n\n";
+        }
+
+        if ( ! empty( $entities['people'] ) || ! empty( $entities['key_terms'] ) ) {
+            $prompt .= "=== ENTITIES (for NEW ideas only) ===\n";
+            if ( ! empty( $entities['people'] ) ) {
+                $prompt .= 'People: ' . implode( ', ', array_slice( array_keys( $entities['people'] ), 0, 25 ) ) . "\n";
+            }
+            if ( ! empty( $entities['key_terms'] ) ) {
+                $prompt .= 'Terms: ' . implode( ', ', array_slice( array_keys( $entities['key_terms'] ), 0, 25 ) ) . "\n";
+            }
+            $prompt .= "\n";
+        }
+
+        $prompt .= "=== CONTENT SAMPLES ===\n";
+        foreach ( $samples as $i => $sample ) {
+            $prompt .= ( $i + 1 ) . ". \"{$sample['title']}\"\n   {$sample['excerpt']}\n\n";
+        }
+
+        $prompt .= "=== TASK ===\n";
+        $prompt .= "Return ONLY a JSON array (may be empty []) of NEW objects. Each object: primary_keyword, longtail_keywords (array), search_intent, priority.\n";
+        $prompt .= "PRIMARY MIX (critical — user already has primaries; do not only stuff more longtails under them):\n";
+        $prompt .= "- Most of your output must be **NEW primary_keyword topics** (exact primary strings NOT already listed as a primary in AUTHORITATIVE above; paraphrases of the same topic count as duplicates — pick genuinely different clusters from CONTENT SAMPLES / entities).\n";
+        $prompt .= "- You MAY add a **small** number of extra longtails under existing imported primaries — hard limit **{$max_on_imported_primaries} longtail rows total** across the entire JSON that reuse an imported primary. Spread them; do not output 15 longtails for one primary.\n";
+        $prompt .= "- Target at least **{$min_new_primaries} distinct NEW primary_keyword** values in your JSON (each can have a few longtails). If evidence is thin, fewer objects is OK.\n";
+        $prompt .= "OTHER RULES:\n";
+        $prompt .= "- Hard ceiling {$cap} longtail_keyword ROWS total (each longtail = one row). Aim about {$aim_lo}–{$cap} when gaps are strong.\n";
+        $prompt .= "- Every longtail must be NEW vs AUTHORITATIVE (no duplicate primary+longtail pair after trim/lowercase).\n";
+        $prompt .= "- Longtails: mostly 3–8 words, lowercase, real queries; align wording with the site's terminology.\n\n";
+        $prompt .= "Respond with ONLY valid JSON. Example: []\n";
+
+        return $prompt;
+    }
     
+    /**
+     * Decode AI keyword JSON whether it is a raw array, wrapped object, or alternate field names.
+     *
+     * @param string $response Raw model output.
+     * @return array|null List of items (may need per-item normalization), or null.
+     */
+    private function extract_keyword_json_array_from_ai_response( $response ) {
+        $response = preg_replace( '/^```json\s*\n/m', '', $response );
+        $response = preg_replace( '/^```\s*\n/m', '', $response );
+        $response = preg_replace( '/\n```$/m', '', $response );
+        $response = trim( $response );
+
+        $try_decode = function ( $chunk ) {
+            $chunk = trim( $chunk );
+            if ( $chunk === '' ) {
+                return null;
+            }
+            $decoded = json_decode( $chunk, true );
+
+            return ( json_last_error() === JSON_ERROR_NONE && is_array( $decoded ) ) ? $decoded : null;
+        };
+
+        $data = $try_decode( $response );
+        if ( $data === null && preg_match( '/\[[\s\S]*\]/', $response, $matches ) ) {
+            $data = $try_decode( $matches[0] );
+        }
+        if ( $data === null && preg_match( '/\{[\s\S]*"keywords"[\s\S]*\}/', $response, $om ) ) {
+            $data = $try_decode( $om[0] );
+        }
+        if ( $data === null && preg_match( '/\{[\s\S]*"items"[\s\S]*\}/', $response, $om ) ) {
+            $data = $try_decode( $om[0] );
+        }
+        if ( $data === null ) {
+            error_log( 'MindfulSEO: keyword JSON could not be decoded as a usable array. Preview: ' . substr( $response, 0, 400 ) );
+
+            return null;
+        }
+
+        $unwrap_keys = array( 'keywords', 'items', 'suggestions', 'data', 'results' );
+        foreach ( $unwrap_keys as $uk ) {
+            if ( isset( $data[ $uk ] ) && is_array( $data[ $uk ] ) ) {
+                $data = $data[ $uk ];
+                break;
+            }
+        }
+
+        if ( isset( $data['primary_keyword'] ) && ! isset( $data[0] ) ) {
+            $data = array( $data );
+        }
+
+        return is_array( $data ) ? $data : null;
+    }
+
+    /**
+     * Map common model shapes to the schema expected by the keyword importer.
+     *
+     * @param array $item Raw item.
+     * @return array|null Normalized item with primary_keyword, longtail_keywords, search_intent, priority.
+     */
+    private function normalize_ai_keyword_item_for_parse( $item ) {
+        if ( ! is_array( $item ) ) {
+            return null;
+        }
+        $out = $item;
+
+        if ( empty( $out['primary_keyword'] ) ) {
+            if ( ! empty( $out['primary'] ) ) {
+                $out['primary_keyword'] = $out['primary'];
+            } elseif ( ! empty( $out['primaryKeyword'] ) ) {
+                $out['primary_keyword'] = $out['primaryKeyword'];
+            }
+        }
+
+        if ( ! isset( $out['longtail_keywords'] ) ) {
+            if ( isset( $out['longtail_keyword'] ) ) {
+                $lt = $out['longtail_keyword'];
+                $out['longtail_keywords'] = is_array( $lt ) ? $lt : array( $lt );
+            } elseif ( ! empty( $out['longtails'] ) && is_array( $out['longtails'] ) ) {
+                $out['longtail_keywords'] = $out['longtails'];
+            } elseif ( ! empty( $out['long_tail_keywords'] ) && is_array( $out['long_tail_keywords'] ) ) {
+                $out['longtail_keywords'] = $out['long_tail_keywords'];
+            }
+        }
+        if ( isset( $out['longtail_keywords'] ) && is_string( $out['longtail_keywords'] ) ) {
+            $out['longtail_keywords'] = array( $out['longtail_keywords'] );
+        }
+
+        if ( empty( $out['search_intent'] ) && ! empty( $out['intent'] ) ) {
+            $out['search_intent'] = $out['intent'];
+        }
+        if ( empty( $out['search_intent'] ) ) {
+            $out['search_intent'] = 'Informational';
+        }
+        $intent_key = strtolower( trim( (string) $out['search_intent'] ) );
+        $intent_map = array(
+            'informational' => 'Informational',
+            'navigational'  => 'Navigational',
+            'transactional' => 'Transactional',
+            'commercial'    => 'Commercial',
+            'info'          => 'Informational',
+            'nav'           => 'Navigational',
+            'transaction'   => 'Transactional',
+        );
+        $out['search_intent'] = isset( $intent_map[ $intent_key ] ) ? $intent_map[ $intent_key ] : 'Informational';
+
+        if ( empty( $out['priority'] ) ) {
+            $out['priority'] = 'MEDIUM';
+        }
+
+        if ( empty( $out['primary_keyword'] ) || ! isset( $out['longtail_keywords'] ) || ! is_array( $out['longtail_keywords'] ) ) {
+            return null;
+        }
+
+        return $out;
+    }
+
     /**
      * Parse AI response for keywords
      *
      * @param string $response AI response
      * @return array Parsed keywords
      */
-    private function parse_ai_keyword_response($response) {
-        $response = preg_replace('/^```json\s*\n/m', '', $response);
-        $response = preg_replace('/^```\s*\n/m', '', $response);
-        $response = preg_replace('/\n```$/m', '', $response);
-        $response = trim($response);
-        
-        if (!str_starts_with($response, '[')) {
-            if (preg_match('/\[[\s\S]*\]/', $response, $matches)) {
-                $response = $matches[0];
-            }
-        }
-        
-        $data = json_decode($response, true);
-        
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log('MindfulSEO: JSON parse error in AI keywords: ' . json_last_error_msg());
-            error_log('Response: ' . substr($response, 0, 500));
+    private function parse_ai_keyword_response( $response ) {
+        $data = $this->extract_keyword_json_array_from_ai_response( $response );
+        if ( $data === null ) {
             return array();
         }
-        
-        if (!is_array($data)) {
-            return array();
-        }
-        
-        // Deduplicate: track primary keywords we've already seen to skip
-        // near-duplicates (substring overlap or very similar phrasing)
+
         $seen_primaries = array();
-        $keywords = array();
-        
-        foreach ($data as $item) {
-            if (!isset($item['primary_keyword']) || !isset($item['longtail_keywords']) || 
-                !isset($item['search_intent']) || !isset($item['priority'])) {
-                continue;
-            }
-            
-            $primary_raw = strtolower(trim(sanitize_text_field($item['primary_keyword'])));
-            
-            $word_count = str_word_count($primary_raw);
-            if ($word_count < 1 || $word_count > 6) {
+        $keywords       = array();
+
+        foreach ( $data as $item ) {
+            $item = $this->normalize_ai_keyword_item_for_parse( $item );
+            if ( $item === null ) {
                 continue;
             }
 
-            $valid_intents = array('Informational', 'Navigational', 'Transactional', 'Commercial');
-            if (!in_array($item['search_intent'], $valid_intents)) {
+            $primary_raw = strtolower( trim( sanitize_text_field( $item['primary_keyword'] ) ) );
+
+            $word_count = str_word_count( $primary_raw );
+            if ( $word_count < 1 || $word_count > 6 ) {
+                continue;
+            }
+
+            $valid_intents = array( 'Informational', 'Navigational', 'Transactional', 'Commercial' );
+            if ( ! in_array( $item['search_intent'], $valid_intents, true ) ) {
                 $item['search_intent'] = 'Informational';
             }
-            
-            $valid_priorities = array('HIGH', 'MEDIUM', 'LOW');
-            if (!in_array(strtoupper($item['priority']), $valid_priorities)) {
+
+            $valid_priorities = array( 'HIGH', 'MEDIUM', 'LOW' );
+            if ( ! in_array( strtoupper( $item['priority'] ), $valid_priorities, true ) ) {
                 $item['priority'] = 'MEDIUM';
             } else {
-                $item['priority'] = strtoupper($item['priority']);
+                $item['priority'] = strtoupper( $item['priority'] );
             }
 
-            $primary_sanitized = $this->sanitize_keyword_phrase_with_guidelines(sanitize_text_field($item['primary_keyword']));
-            if ($primary_sanitized === null) {
+            $primary_sanitized = $this->sanitize_keyword_phrase_with_guidelines( sanitize_text_field( $item['primary_keyword'] ) );
+            if ( $primary_sanitized === null ) {
                 continue;
             }
 
-            $primary = strtolower($primary_sanitized);
+            $primary      = strtolower( $primary_sanitized );
             $is_duplicate = false;
-            foreach ($seen_primaries as $existing) {
-                if (strpos($existing, $primary) !== false || strpos($primary, $existing) !== false) {
+            foreach ( $seen_primaries as $existing ) {
+                if ( strpos( $existing, $primary ) !== false || strpos( $primary, $existing ) !== false ) {
                     $is_duplicate = true;
                     break;
                 }
-                $existing_words = explode(' ', $existing);
-                $primary_words = explode(' ', $primary);
-                $shared = count(array_intersect($primary_words, $existing_words));
-                $max_words = max(count($existing_words), count($primary_words));
-                if ($max_words > 0 && ($shared / $max_words) > 0.6) {
+                $existing_words = explode( ' ', $existing );
+                $primary_words  = explode( ' ', $primary );
+                $shared         = count( array_intersect( $primary_words, $existing_words ) );
+                $max_words      = max( count( $existing_words ), count( $primary_words ) );
+                if ( $max_words > 0 && ( $shared / $max_words ) > 0.6 ) {
                     $is_duplicate = true;
                     break;
                 }
             }
-            if ($is_duplicate) {
+            if ( $is_duplicate ) {
                 continue;
             }
             $seen_primaries[] = $primary;
-            
-            if (is_array($item['longtail_keywords'])) {
-                $longtails = $item['longtail_keywords'];
-                foreach ($longtails as $longtail) {
-                    $longtail_clean = trim(sanitize_text_field($longtail));
-                    if (empty($longtail_clean) || str_word_count($longtail_clean) < 3) {
-                        continue;
-                    }
-                    $longtail_sanitized = $this->sanitize_keyword_phrase_with_guidelines($longtail_clean);
-                    if ($longtail_sanitized === null) {
-                        continue;
-                    }
-                    $keywords[] = array(
-                        'primary_keyword' => $primary_sanitized,
-                        'longtail_keyword' => $longtail_sanitized,
-                        'search_intent' => $item['search_intent'],
-                        'priority' => $item['priority'],
-                        'source' => 'AI Generated'
-                    );
+
+            foreach ( $item['longtail_keywords'] as $longtail ) {
+                $longtail_clean = trim( sanitize_text_field( $longtail ) );
+                $wc_lt          = str_word_count( $longtail_clean );
+                if ( $longtail_clean === '' || ( $wc_lt < 2 && strlen( $longtail_clean ) < 10 ) ) {
+                    continue;
                 }
+                $longtail_sanitized = $this->sanitize_keyword_phrase_with_guidelines( $longtail_clean );
+                if ( $longtail_sanitized === null ) {
+                    continue;
+                }
+                $keywords[] = array(
+                    'primary_keyword'  => $primary_sanitized,
+                    'longtail_keyword' => $longtail_sanitized,
+                    'search_intent'    => $item['search_intent'],
+                    'priority'         => $item['priority'],
+                    'source'           => 'AI Generated',
+                );
             }
         }
-        
+
         return $keywords;
     }
     
@@ -1206,6 +1439,9 @@ class MFSEO_Content_Analyzer {
             'use_ai' => true,
             'deep_analysis' => false,
             'wizard_guidelines_snapshot' => '',
+            'wizard_preservable_guideline_count' => 0,
+            'wizard_extend_only_guidelines' => false,
+            'wizard_max_extra_guidelines' => 30,
             'ai_usage_context' => '',
         );
         
@@ -1270,7 +1506,17 @@ class MFSEO_Content_Analyzer {
         if (!empty($options['wizard_guidelines_snapshot'])) {
             $existing_context['wizard_guidelines_snapshot'] = $options['wizard_guidelines_snapshot'];
         }
-        
+        if ( isset( $options['wizard_preservable_guideline_count'] ) ) {
+            $existing_context['wizard_preservable_guideline_count'] = (int) $options['wizard_preservable_guideline_count'];
+        }
+        if ( ! empty( $options['wizard_extend_only_guidelines'] ) ) {
+            $existing_context['wizard_extend_only_guidelines'] = true;
+        }
+        $existing_context['wizard_max_extra_guidelines'] = max( 1, (int) $options['wizard_max_extra_guidelines'] );
+        if ( ! empty( $options['ai_usage_context'] ) && $options['ai_usage_context'] === 'setup_wizard_guidelines' ) {
+            $existing_context['wizard_setup_guideline_sizing'] = true;
+        }
+
         $prompt = $this->build_guideline_generation_prompt($content_samples, $pattern_results, $existing_context);
         
         $ai_connector = MFSEO_AI_Connector::get_instance();
@@ -1278,7 +1524,7 @@ class MFSEO_Content_Analyzer {
         $response = $ai_connector->generate_content($prompt, array(
             'timeout' => $deep ? 150 : 90,
             'temperature' => 0.3,
-            'max_tokens' => $deep ? 6000 : 4800,
+            'max_tokens' => $deep ? 9000 : 7200,
             'fast_model' => !$deep,
             'usage_context' => $gl_ctx,
         ));
@@ -1348,11 +1594,30 @@ class MFSEO_Content_Analyzer {
     }
     
     private function build_guideline_generation_prompt($samples, $pattern_results, $existing_context = array()) {
-        $site_name = get_bloginfo('name');
-        $site_description = get_bloginfo('description');
+        $has_editor_snapshot = ! empty( $existing_context['wizard_guidelines_snapshot'] );
+        $extend_gl_only         = ! empty( $existing_context['wizard_extend_only_guidelines'] );
+        $wizard_gl_sizing       = ! empty( $existing_context['wizard_setup_guideline_sizing'] );
+        $max_extra_gl           = isset( $existing_context['wizard_max_extra_guidelines'] )
+            ? max( 1, min( 80, (int) $existing_context['wizard_max_extra_guidelines'] ) )
+            : 30;
+        $n_pres_gl              = isset( $existing_context['wizard_preservable_guideline_count'] ) ? max( 0, (int) $existing_context['wizard_preservable_guideline_count'] ) : 0;
+        $gl_aim_lo              = max( 1, $max_extra_gl - 12 );
+        if ( $extend_gl_only && $n_pres_gl > 0 ) {
+            $soft_avoid      = max( 12, min( 34, (int) round( $max_extra_gl * 0.48 ) ) );
+            $soft_preferred  = max( 10, min( 30, (int) round( $max_extra_gl * 0.42 ) ) );
+            $soft_seo        = max( 10, min( 30, (int) round( $max_extra_gl * 0.38 ) ) );
+            $soft_capitalize = max( 2, min( 9, (int) round( $max_extra_gl * 0.14 ) ) );
+        } else {
+            $soft_avoid      = max( 8, min( 28, (int) round( $max_extra_gl * 0.42 ) ) );
+            $soft_capitalize = max( 8, min( 24, (int) round( $max_extra_gl * 0.40 ) ) );
+            $soft_preferred  = max( 8, min( 20, (int) round( $max_extra_gl * 0.32 ) ) );
+            $soft_seo        = max( 8, min( 20, (int) round( $max_extra_gl * 0.32 ) ) );
+        }
+        $site_name             = get_bloginfo( 'name' );
+        $site_description      = get_bloginfo( 'description' );
         
-        $prompt = "You are an expert SEO editor creating comprehensive language guidelines for a website. ";
-        $prompt .= "You will generate rules across multiple categories based on the site's content, existing keyword strategy, and existing guidelines.\n\n";
+        $prompt = "You are an expert SEO editor creating high-precision language guidelines for a website. ";
+        $prompt .= "Output rules only when they are clearly correct for this site and supported by the evidence below; if unsure, omit the rule.\n\n";
         
         $prompt .= "=== WEBSITE ===\n";
         $prompt .= "Name: {$site_name}\n";
@@ -1368,8 +1633,15 @@ class MFSEO_Content_Analyzer {
         $prompt .= "\n";
 
         if (!empty($existing_context['wizard_guidelines_snapshot'])) {
-            $prompt .= "=== PREVIOUS SAVED LANGUAGE GUIDELINES (from database — IMPROVE: refine, expand, and deduplicate; replace weak rules with stronger ones) ===\n";
+            if ( $extend_gl_only && $n_pres_gl > 0 ) {
+                $prompt .= "SETUP WIZARD — the rules below are ALREADY saved (import/manual). They are authoritative and IMMUTABLE for this step: do not re-output them, do not edit them, do not contradict them. Your JSON may ONLY add NEW rules that are not duplicates (same type+avoid+preferred). Hard ceiling {$max_extra_gl} new rules in the entire response; aim about {$gl_aim_lo}–{$max_extra_gl} when evidence supports it; fewer or [] is correct if nothing solid is missing.\n";
+            } else {
+                $prompt .= "Authoritative editor/site policy. NEVER contradict it. Your JSON lists ONLY new rules to add (imported rows may already exist). When this block is present: output roughly 28–38 new rules with a healthy mix across types—not mostly capitalize and not a tiny handful. Prioritize avoid_term and preferred_term pairs that mirror the Avoid→Use / Preferred style below, extended with CONTENT SAMPLES.\n";
+            }
             $prompt .= $this->truncate_for_ai_prompt( $existing_context['wizard_guidelines_snapshot'], 12000 ) . "\n\n";
+        }
+        if ( $n_pres_gl > 0 && ! ( $extend_gl_only && ! empty( $existing_context['wizard_guidelines_snapshot'] ) ) ) {
+            $prompt .= "REINFORCEMENT MODE: {$n_pres_gl} imported or manual guideline rule(s) are already saved in the database. They are not replaced by this step. Output only NEW rules (unique type+avoid+preferred) that complement the snapshot — never duplicate or contradict them.\n\n";
         }
         
         if (!empty($existing_context['primary_keywords'])) {
@@ -1409,42 +1681,77 @@ class MFSEO_Content_Analyzer {
         
         $prompt .= "=== TASK ===\n\n";
 
-        $prompt .= "Build a PRACTICAL STARTER SET of language rules the site will use immediately for AI-assisted SEO (titles, meta, keywords, batch optimization). ";
-        $prompt .= "Coverage should be broad enough that optimization runs smoothly without editors having to add dozens of rules by hand first.\n\n";
+        $prompt .= "Propose NEW language rules that COMPLEMENT the existing guidelines (if any). They support AI-assisted SEO (titles, meta, keywords, batch optimization).\n";
+        if ( $extend_gl_only && $n_pres_gl > 0 ) {
+            $prompt .= "You are in EXTEND-ONLY mode: imports stay exactly as saved; output only NEW rules. Hard ceiling {$max_extra_gl} NEW rules total. Aim about {$gl_aim_lo}–{$max_extra_gl} when evidence is strong; stop sooner if not.\n\n";
+            $prompt .= "STYLE MATCH: Your imports are substantive (editorial avoid→preferred, voice, SEO notes). Extend in that spirit: **prioritize avoid_term, preferred_term, and seo_friendly** with meaningful context fields — not a wall of trivial one-word capitalize fixes.\n";
+            $prompt .= "CAPITALIZE BUDGET: Use **at most ~{$soft_capitalize} capitalize rules**, only for clear canonical proper names clearly missing from imports. Do NOT bulk-capitalize generic words already covered or obvious from the snapshot.\n\n";
+            $prompt .= "Per-type soft targets (stay within the {$max_extra_gl} total): avoid_term ~{$soft_avoid}, preferred_term ~{$soft_preferred}, seo_friendly ~{$soft_seo}, capitalize ~{$soft_capitalize}.\n\n";
+        } elseif ( $has_editor_snapshot && $wizard_gl_sizing ) {
+            $wiz_hi = min( 58, $max_extra_gl + 2 );
+            $wiz_lo = max( 40, $gl_aim_lo );
+            $prompt .= "SETUP WIZARD full guidelines pass (no imported preservable rows counted, but a policy snapshot may be present): aim for roughly {$wiz_lo}–{$wiz_hi} NEW rules with a healthy mix.\n\n";
+            $prompt .= "SOFT UPPER LIMITS (scale down when evidence is thin):\n";
+            $prompt .= "- avoid_term: up to ~{$soft_avoid}\n";
+            $prompt .= "- capitalize: up to ~{$soft_capitalize}\n";
+            $prompt .= "- preferred_term: up to ~{$soft_preferred}\n";
+            $prompt .= "- seo_friendly: up to ~{$soft_seo}\n\n";
+        } elseif ( $has_editor_snapshot ) {
+            $prompt .= "Because a USER-DEFINED / IMPORTED snapshot is present: aim for about 28–38 rules in your JSON array with a healthy mix (do not let capitalize dominate). Quality over padding—every rule must be defensible from the snapshot and/or CONTENT SAMPLES.\n\n";
+            $prompt .= "SOFT UPPER LIMITS (stay at or below when evidence is thin for a type):\n";
+            $prompt .= "- avoid_term: up to ~18 when extending the snapshot's Avoid→Use style; otherwise up to ~10\n";
+            $prompt .= "- capitalize: up to ~18 (proper names/entities from samples/snapshot only)\n";
+            $prompt .= "- preferred_term: up to ~12 (short label → standard editorial form, including respectful pairs where avoid is 1–3 words)\n";
+            $prompt .= "- seo_friendly: up to ~12\n\n";
+        } elseif ( $wizard_gl_sizing ) {
+            $cold_hi = min( 62, $max_extra_gl + 2 );
+            $cold_lo = max( 48, $gl_aim_lo );
+            $prompt .= "SETUP WIZARD — no imported guideline snapshot in the prompt: propose a full initial AI guideline set from CONTENT SAMPLES. Aim roughly {$cold_lo}–{$cold_hi} rules total; fewer if quality would drop.\n\n";
+            $prompt .= "SOFT UPPER LIMITS:\n";
+            $prompt .= "- avoid_term: up to ~{$soft_avoid}\n";
+            $prompt .= "- capitalize: up to ~{$soft_capitalize}\n";
+            $prompt .= "- preferred_term: up to ~{$soft_preferred}\n";
+            $prompt .= "- seo_friendly: up to ~{$soft_seo}\n\n";
+        } else {
+            $prompt .= "Aim for roughly 14–24 rules TOTAL across all types. Fewer is better when quality would otherwise drop; never pad the list.\n\n";
+            $prompt .= "SOFT UPPER LIMITS (stay at or below; skip a type entirely when you have nothing solid):\n";
+            $prompt .= "- avoid_term: at most 10\n";
+            $prompt .= "- capitalize: at most 14\n";
+            $prompt .= "- preferred_term: at most 8\n";
+            $prompt .= "- seo_friendly: at most 10\n\n";
+        }
+        $prompt .= "Each rule must have a \"type\" field. The four types:\n\n";
 
-        $prompt .= "Generate 30-55 NEW language rules that COMPLEMENT the existing guidelines. Each rule must have a \"type\" field. The four types are:\n\n";
+        $prompt .= "TYPE 1: \"avoid_term\" — outsider/vague or editorially wrong wording FOR THIS SITE\n";
+        $prompt .= "Both \"avoid\" and \"preferred\" are required. Keep \"avoid\" to 1–4 words.\n";
+        $prompt .= "When the USER-DEFINED snapshot lists Avoid→Use pairs, yours should extend that pattern using CONTENT SAMPLES—same tone, not generic grammar nitpicks.\n";
+        $prompt .= "Do NOT invent contrast pairs unrelated to the site; skip if unsure.\n\n";
 
-        $prompt .= "TYPE 1: \"avoid_term\" — SEMANTIC DOMAIN REPLACEMENTS (generate at least 12)\n";
-        $prompt .= "Words that outsiders/casual writers use vs the correct domain-specific term.\n";
-        $prompt .= "Both \"avoid\" and \"preferred\" fields are required.\n";
-        $prompt .= "Think: What would a newcomer/outsider call things on this site vs what insiders call them?\n";
-        $prompt .= "Also include common misspellings of domain terms.\n";
-        $prompt .= "Examples: 'ritual' → 'practice', 'budha' → 'Buddha', 'priest' → 'lama'\n\n";
-
-        $prompt .= "TYPE 2: \"capitalize\" — CANONICAL PROPER NAMES (generate at least 10)\n";
+        $prompt .= "TYPE 2: \"capitalize\" — CANONICAL PROPER NAMES (only when clearly supported by samples, keywords, or saved guidelines)\n";
         $prompt .= "Use the site's STANDARD full name for each entity — Title Case, no extra fluff.\n";
         $prompt .= "PEOPLE: full name as you would list them in a directory (e.g. given names + family/Rinpoche line). Do NOT add leading adjectives (\"Great\", \"Venerable\", \"Dear\", \"Beloved\"), stacked honorifics, or descriptive clauses. No comma-separated bios.\n";
         $prompt .= "PLACES (monasteries, temples, schools, centers): OFFICIAL name only — e.g. \"Kopan Monastery\", \"Sagarmatha Secondary School\". Do NOT prepend \"Our\", \"The famous\", \"Beautiful\", region stacks, or marketing words.\n";
         $prompt .= "Only \"preferred\" field is needed (the correctly capitalized form).\n";
         $prompt .= "NEVER use standalone common nouns: 'office', 'center', 'practice', 'retreat', 'community', 'event', 'fund', 'newsletter', 'program' (unless part of a real proper name like \"X Program\" where X is the official brand).\n";
+        $prompt .= "Do NOT copy post titles or newsletter headlines as \"entities\".\n";
         $prompt .= "Examples: 'Lama Zopa Rinpoche', 'Medicine Buddha', 'Heart Sutra', 'Rolwaling Sangag Choling Monastery'\n\n";
 
-        $prompt .= "TYPE 3: \"preferred_term\" — SHORT FORM → FULL FORM ONLY (generate at least 4)\n";
-        $prompt .= "ONLY when the site uses BOTH a short label and a longer official name for the SAME entity (e.g. \"FPMT\" → full org name, \"ILTK\" → full institute name).\n";
+        $prompt .= "TYPE 3: \"preferred_term\" — SHORT or informal label → STANDARD EDITORIAL FORM\n";
+        $prompt .= "Use for acronyms or respectful usage (e.g. \"FPMT\" → full org name; informal label → standard honorific form).\n";
         $prompt .= "Both \"avoid\" and \"preferred\" are REQUIRED. \"avoid\" must be SHORT (1–3 words). \"preferred\" must be 2–5 words max.\n";
         $prompt .= "FORBIDDEN for preferred_term: post titles, newsletter headlines, or vague phrases. Put people's and institutions' CANONICAL names under \"capitalize\" instead.\n";
-        $prompt .= "preferred_term is ONLY for short label → longer official name (e.g. acronyms), not for copying headlines.\n";
+        $prompt .= "Each rule must mirror real usage in CONTENT SAMPLES or the USER-DEFINED snapshot.\n";
         $prompt .= "Examples: 'Zopa Rinpoche' → 'Lama Zopa Rinpoche', 'ILTK' → 'Istituto Lama Tzong Khapa'\n\n";
 
-        $prompt .= "TYPE 4: \"seo_friendly\" — KEY DOMAIN PHRASES FOR SEO (generate at least 8)\n";
-        $prompt .= "Short, realistic search phrases (2–6 words) that match how people search — NOT article titles or proper nouns copied from content.\n";
+        $prompt .= "TYPE 4: \"seo_friendly\" — REALISTIC SEARCH PHRASES (not headlines or copied proper-name strings)\n";
+        $prompt .= "Short phrases (2–6 words) that match how people search — NOT article titles or multi-entity lists.\n";
         $prompt .= "Only \"preferred\" field is needed.\n";
         $prompt .= "Examples: 'buddhist meditation practice', 'tibetan buddhist teachings'\n\n";
 
         $prompt .= "CRITICAL RULES:\n";
-        $prompt .= "- Hit the minimum counts per type; prefer slightly more avoid_term and seo_friendly if you must choose — they anchor keyword and phrasing consistency during optimization\n";
+        $prompt .= "- Accuracy over count: omit any rule you are not sure about\n";
         $prompt .= "- Do NOT duplicate any existing guidelines shown above\n";
-        $prompt .= "- Do NOT duplicate any detected proper nouns shown above\n";
+        $prompt .= "- Do NOT duplicate any detected proper nouns shown above (for capitalize — those are already covered)\n";
         $prompt .= "- Focus on DOMAIN-SPECIFIC language, not general grammar\n";
         $prompt .= "- preferred_term: short↔long pairs only; \"preferred\" max 5 words. Full person/place names belong in \"capitalize\", not here.\n";
         $prompt .= "- seo_friendly: max 6 words, max ~70 characters; must read like a search query, not a page headline\n";
@@ -1456,6 +1763,7 @@ class MFSEO_Content_Analyzer {
         $prompt .= "- NEVER eliminate legitimate terms that have distinct meanings. E.g. 'nunnery' is NOT wrong for 'monastery' — they refer to different things\n";
         $prompt .= "- Only create avoid rules where the avoid term is genuinely WRONG or INAPPROPRIATE, not just a different but valid word\n";
         $prompt .= "- avoid_term: Do NOT flag standard English vocabulary as wrong. Words like 'enlightenment', 'morality', 'spiritual guide', 'retreat', 'prayer' are perfectly valid. Only flag terms that are genuinely incorrect or misleading in this domain.\n";
+        $prompt .= "- BAD EXAMPLES (omit unless USER-DEFINED snapshot explicitly forbids the avoid): swapping normal phrases like \"Buddhist nun\", \"monastery retreat\", generic \"retreat\", or hyphen nitpicks like \"merit-making\"—unless samples prove the org consistently avoids them.\n";
         $prompt .= "- capitalize: Ask yourself — would this word be capitalized in a newspaper? If not, it is NOT a proper noun. 'Office', 'Center', 'Fund' etc. are common nouns unless part of a specific proper name.\n\n";
 
         $settings = get_option('mindfulseo_settings', array());
@@ -1610,6 +1918,9 @@ class MFSEO_Content_Analyzer {
                 }
                 break;
             case 'avoid_term':
+                if ( $aw < 1 || $aw > 4 ) {
+                    return false;
+                }
                 if ( strlen( $preferred ) > 120 || strlen( $avoid ) > 85 ) {
                     return false;
                 }

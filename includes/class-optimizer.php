@@ -354,6 +354,42 @@ class MFSEO_Optimizer {
     }
 
     /**
+     * Page-type or title-fragment phrases that look like SEO keywords but are not useful targets.
+     */
+    private function is_weak_generic_keyword( $keyword ) {
+        if ( $keyword === '' || $keyword === null ) {
+            return true;
+        }
+        if ( $this->is_garbage_keyword( $keyword ) ) {
+            return true;
+        }
+        $kw = strtolower( trim( $keyword ) );
+
+        if ( preg_match( '/\b(?:donation|contact|registration|application|feedback|inquiry|survey|order|payment|request)\s+form\b/u', $kw ) ) {
+            return true;
+        }
+        if ( preg_match( '/^(?:fpmt\s+)?basic\s+program\s+materials$/u', $kw ) || $kw === 'basic program materials' ) {
+            return true;
+        }
+        if ( preg_match( '/^(?:fpmt\s+)?program\s+materials$/u', $kw ) || $kw === 'program materials' ) {
+            return true;
+        }
+        if ( preg_match( '/^international\s+office\s+news$/u', $kw ) || preg_match( '/^office\s+news$/u', $kw ) ) {
+            return true;
+        }
+        if ( preg_match( '/^materials$/u', $kw ) || preg_match( '/^form$/u', $kw ) ) {
+            return true;
+        }
+        if ( str_word_count( $kw ) <= 2 && preg_match( '/\b(?:news|materials|form)\s*$/u', $kw ) ) {
+            if ( preg_match( '/\b(office|international|monthly|weekly)\b/u', $kw ) ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Last-resort keyword extraction: pick the most distinctive word from the title.
      * Used when all other extraction methods produced garbage.
      */
@@ -540,7 +576,9 @@ class MFSEO_Optimizer {
         
         // Detect newsletter/roundup/digest posts from the title.
         // These posts cover multiple topics so a content-only keyword match is unreliable.
-        $is_roundup = (bool) preg_match('/\b(e-?news|newsletter|news\s*letter|roundup|round-up|digest|recap|bulletin|update|round\s*up|weekly|monthly|annual\s+report)\b/i', $title);
+        $is_roundup = (bool) preg_match('/\b(e-?news|newsletter|news\s*letter|roundup|round-up|digest|recap|bulletin|update|round\s*up|office\s+news|weekly|monthly|annual\s+report)\b/i', $title);
+        $is_roundup = $is_roundup || (bool) preg_match('/\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:19|20)\d{2}\b/i', $title);
+        $is_roundup = $is_roundup || (bool) preg_match('/\bnews\b.*\b(?:19|20)\d{2}\b/', $title);
         
         if (!empty($keywords)) {
             $best_match = $keywords[0];
@@ -611,12 +649,33 @@ class MFSEO_Optimizer {
         // consistently uses the longer version.
         $primary_keyword_text = $this->expand_proper_name($primary_keyword_text, $title, $content);
         
+        if ( ! $use_keyword_from_strategy && $this->is_weak_generic_keyword( $primary_keyword_text ) ) {
+            $this->last_extraction_confident = false;
+        }
+
         // Load language guidelines
         $guidelines_context = $this->guidelines_engine->generate_ai_context();
         
-        // When extraction was weak (no proper nouns, just title words), let
-        // the AI choose a better keyword from the actual content.
         $keyword_confident = $use_keyword_from_strategy || $this->last_extraction_confident;
+        $strategy_keyword_candidates = array();
+        if ( ! $use_keyword_from_strategy && ! empty( $keywords ) ) {
+            foreach ( array_slice( $keywords, 0, 12 ) as $entry ) {
+                if ( empty( $entry['keyword']->primary_keyword ) ) {
+                    continue;
+                }
+                $pk                 = $entry['keyword']->primary_keyword;
+                $strategy_keyword_candidates[] = sprintf(
+                    '- %s (relevance score %.1f)',
+                    $pk,
+                    isset( $entry['score'] ) ? (float) $entry['score'] : 0.0
+                );
+            }
+        }
+        $needs_ai_focus_keyword = ! $use_keyword_from_strategy && (
+            $is_roundup
+            || $this->is_weak_generic_keyword( $primary_keyword_text )
+            || ! $keyword_confident
+        );
 
         // Build AI prompt
         $prompt = $this->build_optimization_prompt(array(
@@ -628,6 +687,8 @@ class MFSEO_Optimizer {
             'guidelines' => $guidelines_context,
             'use_keyword_from_strategy' => $use_keyword_from_strategy,
             'keyword_confident' => $keyword_confident,
+            'needs_ai_focus_keyword' => $needs_ai_focus_keyword,
+            'strategy_keyword_candidates' => $strategy_keyword_candidates,
         ));
         
         $response = $this->ai_connector->generate_content($prompt, array(
@@ -652,18 +713,39 @@ class MFSEO_Optimizer {
             return $optimization_data;
         }
 
-        // If extraction was weak and the AI chose a better keyword, use it.
-        if (!$keyword_confident && !empty($optimization_data['focus_keyword'])) {
-            $ai_keyword = trim($optimization_data['focus_keyword']);
-            if (strlen($ai_keyword) >= 3 && str_word_count($ai_keyword) <= 5
-                && !$this->is_garbage_keyword($ai_keyword)) {
-                error_log(sprintf('MindfulSEO: AI chose keyword "%s" (replacing weak extraction "%s")', $ai_keyword, $primary_keyword_text));
+        // If we asked the model for focus_keyword, prefer it when sane.
+        if ( $needs_ai_focus_keyword && ! empty( $optimization_data['focus_keyword'] ) ) {
+            $ai_keyword = trim( $optimization_data['focus_keyword'] );
+            if ( strlen( $ai_keyword ) >= 3 && str_word_count( $ai_keyword ) <= 5
+                && ! $this->is_garbage_keyword( $ai_keyword )
+                && ! $this->is_weak_generic_keyword( $ai_keyword ) ) {
+                error_log( sprintf( 'MindfulSEO: AI chose keyword "%s" (replacing "%s")', $ai_keyword, $primary_keyword_text ) );
                 $primary_keyword_text = $ai_keyword;
             } else {
-                error_log(sprintf('MindfulSEO: Rejected AI keyword "%s" (garbage/too short/too long)', $ai_keyword));
+                error_log( sprintf( 'MindfulSEO: Rejected AI focus_keyword "%s"', $ai_keyword ) );
             }
         }
-        
+
+        if ( ! $use_keyword_from_strategy && $this->is_weak_generic_keyword( $primary_keyword_text ) && ! empty( $keywords ) ) {
+            $hay = strtolower( $title_lower . ' ' . wp_strip_all_tags( $content ) );
+            foreach ( $keywords as $row ) {
+                if ( empty( $row['keyword']->primary_keyword ) ) {
+                    continue;
+                }
+                $pk = $row['keyword']->primary_keyword;
+                if ( $this->is_weak_generic_keyword( $pk ) || $this->is_garbage_keyword( $pk ) ) {
+                    continue;
+                }
+                $pkl = strtolower( $pk );
+                if ( strpos( $hay, $pkl ) !== false ) {
+                    $primary_keyword_text = $pk;
+                    $longtail_keywords      = $this->keyword_manager->get_longtail_keywords( $pk );
+                    error_log( 'MindfulSEO: Weak keyword replaced with strategy candidate: ' . $pk );
+                    break;
+                }
+            }
+        }
+
         // Final sanity gate: never save a garbage keyword regardless of source
         if ($this->is_garbage_keyword($primary_keyword_text)) {
             error_log(sprintf('MindfulSEO: Final gate rejected garbage keyword "%s" for post %d, falling back to title extraction', $primary_keyword_text, $post_id));
@@ -783,7 +865,8 @@ class MFSEO_Optimizer {
         
         // === KEYWORD STRATEGY ===
         $prompt .= "KEYWORD STRATEGY:\n";
-        $keyword_confident = !empty($data['keyword_confident']);
+        $keyword_confident      = ! empty( $data['keyword_confident'] );
+        $needs_ai_focus_keyword = ! empty( $data['needs_ai_focus_keyword'] );
 
         if (!empty($data['use_keyword_from_strategy'])) {
             $prompt .= "Primary keyword: \"{$data['primary_keyword']}\" — MUST appear in both title and description.\n";
@@ -798,6 +881,20 @@ class MFSEO_Optimizer {
             }
             if (!empty($data['search_intent'])) {
                 $prompt .= "Search intent: {$data['search_intent']}\n";
+            }
+        } elseif ( $needs_ai_focus_keyword ) {
+            if ( ! empty( $data['strategy_keyword_candidates'] ) ) {
+                $prompt .= "The site already has a keyword strategy. These primaries scored as most relevant to this post — use one as \"focus_keyword\" ONLY if it clearly names the main topic; otherwise pick a stronger query:\n";
+                $prompt .= implode( "\n", $data['strategy_keyword_candidates'] ) . "\n\n";
+            }
+            $prompt .= "Choose the single best SEO focus keyword (1-4 words). REQUIRED: include \"focus_keyword\" in the JSON.\n";
+            $prompt .= "Rules:\n";
+            $prompt .= "- Must reflect what a real searcher would type — NOT a generic page label (avoid: \"donation form\", \"office news\", \"basic program materials\", \"contact form\", bare \"materials\").\n";
+            $prompt .= "- Prefer the main subject: organization name, program name, teacher, practice topic, center name, or definitional topic.\n";
+            $prompt .= "- For newsletters or dated \"News\" posts: choose the dominant editorial topic, a flagship program, or the org brand — NOT the word \"news\" with a department name.\n";
+            $prompt .= "- Use proper nouns and domain terms per Language Guidelines.\n";
+            if ( ! empty( $data['primary_keyword'] ) ) {
+                $prompt .= "Heuristic hint from title (often wrong for SEO): \"{$data['primary_keyword']}\" — replace with something more search-worthy when needed.\n";
             }
         } elseif ($keyword_confident) {
             $prompt .= "Primary keyword: \"{$data['primary_keyword']}\" — use this keyword.\n";
@@ -840,7 +937,7 @@ class MFSEO_Optimizer {
         
         $prompt .= "Respond with ONLY valid JSON, no markdown, no commentary:\n";
         $prompt .= "{\n";
-        if (!$keyword_confident && empty($data['use_keyword_from_strategy'])) {
+        if ( $needs_ai_focus_keyword || ( ! $keyword_confident && empty( $data['use_keyword_from_strategy'] ) ) ) {
             $prompt .= '  "focus_keyword": "your chosen keyword",' . "\n";
         }
         $prompt .= '  "seo_title": "Your optimized title here",' . "\n";

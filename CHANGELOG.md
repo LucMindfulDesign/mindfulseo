@@ -3,6 +3,23 @@
 All notable changes to **MindfulSEO** are documented here.  
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-03-29
+
+### Added
+
+- **OpenRouter backend** — optional AI routing via OpenRouter (`includes/class-openrouter-provider.php`, AI connector, settings, and setup wizard). One API key can target many models: curated presets (e.g. Qwen, MiniMax), optional **custom model id**, HTTP Referer for OpenRouter attribution, AJAX connection test, and optional fallback to direct OpenAI / Claude when OpenRouter fails.
+- **Posts Import / Export** — ZIP export with `manifest.csv` and `html/{id}.html`; re-import on another site by **slug + post type** with modes (full merge, create-only, update-existing) and toggles for HTML body and SEO meta via the active SEO plugin adapter (`includes/class-post-import-export.php`, **MindfulSEO → Import / Export**).
+
+### Changed
+
+- **Setup wizard** — Imports from CSV/Markdown stay **authoritative**; AI suggestions are additive caps, not replacements. **Preflight import** runs selected files through the same import endpoints as manual Import before analysis so keywords/guidelines are saved reliably. **Progress UX** uses time-based phases instead of fake/random percentages. Keyword/guideline source labels use sanitized filenames where applicable; extend/regenerate flows respect import preservation counts.
+- **Keywords (wizard & manager)** — Extend-style suggestions favor **new primary topics** with server-side balancing after AI so results are not mostly long-tail stacks on the same primary. CSV importer and keyword manager behavior aligned with wizard preservation and caps.
+- **Guidelines (wizard & engine)** — Extend/regenerate prompts and caps favor substantive **avoid / preferred / SEO** rules over walls of trivial **capitalize** rows; tighter pattern-capitalize limits when imports already exist.
+- **Content analyzer** — Refined prompts and token budgets for wizard keyword/guideline JSON; more resilient extraction/normalization when the model returns loose or truncated structure; clearer handling when zero rows parse (wizard vs. generic errors).
+- **Batch optimizer** — Detects **weak generic** target keywords, can ask the model for **focus_keyword**, surfaces strategy context, and falls back to a matching strategy primary when appropriate.
+- **AI connector, providers, logger** — Routing for OpenRouter vs. direct vendors; retries/fallbacks; usage and cost logging extended for OpenRouter (approximate where needed).
+- **Admin & AJAX** — Settings UI for OpenRouter and primary AI selection; wizard step-1 provider wiring; related API tester and handler endpoints.
+
 ## [2.3.0] - 2026-03-26
 
 ### Added
