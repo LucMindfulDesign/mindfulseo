@@ -679,6 +679,13 @@ class MFSEO_Keyword_Manager {
         if (empty($update_data)) {
             return false;
         }
+
+        if (isset($update_data['primary_keyword']) && trim((string) $update_data['primary_keyword']) === '') {
+            return false;
+        }
+        if (isset($update_data['longtail_keyword']) && trim((string) $update_data['longtail_keyword']) === '') {
+            return false;
+        }
         
         $result = $wpdb->update(
             $this->table_name,

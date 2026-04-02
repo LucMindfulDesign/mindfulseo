@@ -178,7 +178,6 @@
 }
 
 #wizard-step-1 .mfseo-wizard-actions {
-    justify-content: flex-start;
     margin-top: 20px;
     padding-top: 20px;
 }
@@ -484,26 +483,51 @@
     cursor: not-allowed;
 }
 
-/* ── Actions row ── */
+/* ── Actions row (Back left; primary + skip grouped on the right — every step) ── */
 .mfseo-wizard-actions {
     display: flex;
-    gap: 10px;
-    justify-content: center;
+    justify-content: space-between;
     align-items: center;
+    gap: 12px;
     flex-wrap: wrap;
     margin-top: 28px;
     padding-top: 24px;
     border-top: 1px solid #e5e7eb;
+    width: 100%;
+    box-sizing: border-box;
 }
 
-.mfseo-wizard-actions--step3 {
-    justify-content: center;
-    gap: 8px;
+.mfseo-wizard-actions__lead {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+}
+
+.mfseo-wizard-actions__lead--spacer {
+    flex: 1 1 auto;
+    min-width: 12px;
+    align-self: stretch;
+    pointer-events: none;
+}
+
+.mfseo-wizard-actions__trail {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+    flex: 0 1 auto;
 }
 
 .mfseo-wizard-actions--step3 .mfseo-wizard-btn .dashicons {
     line-height: 1.2;
     margin-top: 2px;
+}
+
+.mfseo-wizard-step3-main-actions {
+    display: inline-flex;
+    align-items: center;
 }
 
 .mfseo-wizard-saved-summary {
@@ -1257,7 +1281,11 @@ body.mfseo-wizard-modal-open {
     .mfseo-wizard-step1-credentials { max-width: none; padding: 18px 16px; }
     .mfseo-wizard-site-types,
     .mfseo-wizard-analyze-cards { grid-template-columns: 1fr; }
-    .mfseo-wizard-actions { flex-direction: column; }
+    .mfseo-wizard-actions { flex-direction: column; align-items: stretch; }
+    .mfseo-wizard-actions__lead--spacer { display: none !important; }
+    .mfseo-wizard-actions__lead,
+    .mfseo-wizard-actions__trail { width: 100%; justify-content: center; }
+    .mfseo-wizard-actions__trail { flex-wrap: wrap; }
     .mfseo-wizard-btn { width: 100%; }
     .mfseo-wizard-step-line { width: 24px; }
     .mfseo-wizard-analyze-summary { flex-direction: column; gap: 12px; }

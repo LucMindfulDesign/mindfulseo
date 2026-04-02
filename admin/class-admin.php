@@ -56,10 +56,6 @@ class MFSEO_Admin {
         if (class_exists('MFSEO_Setup_Wizard')) {
             MFSEO_Setup_Wizard::get_instance();
         }
-        if (class_exists('MFSEO_Post_Import_Export')) {
-            MFSEO_Post_Import_Export::init();
-        }
-        
         // Setup wizard hooks
         add_action('admin_notices', array($this, 'maybe_show_wizard_notice'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_wizard_assets'));

@@ -543,6 +543,12 @@ class MFSEO_AJAX_Handlers {
                 wp_send_json_error(array('message' => __('Invalid priority', 'mindfulseo')));
             }
         }
+
+        if (($field === 'primary_keyword' || $field === 'longtail_keyword') && trim($value) === '') {
+            wp_send_json_error(array(
+                'message' => __('Primary and long-tail text cannot be empty. Use Delete if you want to remove a row.', 'mindfulseo'),
+            ));
+        }
         
         $keyword_manager = MFSEO_Keyword_Manager::get_instance();
 

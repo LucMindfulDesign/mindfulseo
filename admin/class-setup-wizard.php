@@ -173,9 +173,12 @@ class MFSEO_Setup_Wizard {
             </div>
 
             <div class="mfseo-wizard-actions">
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-1-next">
-                    <?php _e('Continue', 'mindfulseo'); ?> &rarr;
-                </button>
+                <div class="mfseo-wizard-actions__lead mfseo-wizard-actions__lead--spacer" aria-hidden="true"></div>
+                <div class="mfseo-wizard-actions__trail">
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-1-next">
+                        <?php _e('Continue', 'mindfulseo'); ?> &rarr;
+                    </button>
+                </div>
             </div>
         </div>
         <?php
@@ -238,12 +241,16 @@ class MFSEO_Setup_Wizard {
             </div>
             
             <div class="mfseo-wizard-actions">
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary" id="wizard-step-2-back">
-                    &larr; <?php _e('Back', 'mindfulseo'); ?>
-                </button>
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-2-next">
-                    <?php _e('Continue', 'mindfulseo'); ?> &rarr;
-                </button>
+                <div class="mfseo-wizard-actions__lead">
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary" id="wizard-step-2-back">
+                        &larr; <?php _e('Back', 'mindfulseo'); ?>
+                    </button>
+                </div>
+                <div class="mfseo-wizard-actions__trail">
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-2-next">
+                        <?php _e('Continue', 'mindfulseo'); ?> &rarr;
+                    </button>
+                </div>
             </div>
         </div>
         <?php
@@ -665,22 +672,26 @@ class MFSEO_Setup_Wizard {
             
             
             <div class="mfseo-wizard-actions mfseo-wizard-actions--step3" id="wizard-step-3-actions">
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary" id="wizard-step-3-back">
-                    &larr; <?php _e('Back', 'mindfulseo'); ?>
-                </button>
-                <div class="mfseo-wizard-step3-main-actions" id="wizard-step-3-main-actions">
-                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-3-analyze" data-analyze-enabled="<?php echo $total > 0 ? '1' : '0'; ?>" <?php disabled($total === 0); ?>
-                        title="<?php esc_attr_e( 'Scan your published content with AI (options at the top apply when you have saved keywords or guidelines)', 'mindfulseo' ); ?>">
-                        <span class="dashicons dashicons-search"></span>
-                        <?php _e('Analyze & generate with AI', 'mindfulseo'); ?>
+                <div class="mfseo-wizard-actions__lead">
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary" id="wizard-step-3-back">
+                        &larr; <?php _e('Back', 'mindfulseo'); ?>
                     </button>
                 </div>
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-skip" id="wizard-step-3-skip">
-                    <?php _e('Skip', 'mindfulseo'); ?> &rarr;
-                </button>
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-3-continue-final" style="display:none;">
-                    <?php _e( 'Continue', 'mindfulseo' ); ?> &rarr;
-                </button>
+                <div class="mfseo-wizard-actions__trail">
+                    <div class="mfseo-wizard-step3-main-actions" id="wizard-step-3-main-actions">
+                        <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-3-analyze" data-analyze-enabled="<?php echo $total > 0 ? '1' : '0'; ?>" <?php disabled($total === 0); ?>
+                            title="<?php esc_attr_e( 'Scan your published content with AI (options at the top apply when you have saved keywords or guidelines)', 'mindfulseo' ); ?>">
+                            <span class="dashicons dashicons-search"></span>
+                            <?php _e('Analyze & generate with AI', 'mindfulseo'); ?>
+                        </button>
+                    </div>
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-skip" id="wizard-step-3-skip">
+                        <?php _e('Skip', 'mindfulseo'); ?> &rarr;
+                    </button>
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-3-continue-final" style="display:none;">
+                        <?php _e( 'Continue', 'mindfulseo' ); ?> &rarr;
+                    </button>
+                </div>
             </div>
 
             <div id="wizard-format-modal" class="mfseo-wizard-format-modal" role="dialog" aria-modal="true" aria-labelledby="wizard-format-modal-title" hidden tabindex="-1">
@@ -771,30 +782,37 @@ class MFSEO_Setup_Wizard {
                 </div>
                 <h4><?php _e('Your posts have been optimized!', 'mindfulseo'); ?></h4>
                 <div id="wizard-results"></div>
-                <div class="mfseo-wizard-actions" style="margin-top: 24px;">
-                    <a href="<?php echo esc_url(admin_url('admin.php?page=mindfulseo-batch-optimize&filter_status=optimized')); ?>" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-view-posts-btn">
-                        <?php _e('View Optimized Posts', 'mindfulseo'); ?> &rarr;
-                    </a>
-                    <a href="<?php echo esc_url(admin_url('admin.php?page=mindfulseo-batch-optimize')); ?>" class="mfseo-wizard-btn mfseo-wizard-btn-secondary">
-                        <?php _e('Optimize More Posts', 'mindfulseo'); ?>
-                    </a>
-                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-skip" id="wizard-finish-btn">
-                        <?php _e('Go to Dashboard', 'mindfulseo'); ?>
-                    </button>
+                <div class="mfseo-wizard-actions mfseo-wizard-actions--result" style="margin-top: 24px;">
+                    <div class="mfseo-wizard-actions__lead mfseo-wizard-actions__lead--spacer" aria-hidden="true"></div>
+                    <div class="mfseo-wizard-actions__trail">
+                        <a href="<?php echo esc_url(admin_url('admin.php?page=mindfulseo-batch-optimize&filter_status=optimized')); ?>" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-view-posts-btn">
+                            <?php _e('View Optimized Posts', 'mindfulseo'); ?> &rarr;
+                        </a>
+                        <a href="<?php echo esc_url(admin_url('admin.php?page=mindfulseo-batch-optimize')); ?>" class="mfseo-wizard-btn mfseo-wizard-btn-secondary">
+                            <?php _e('Optimize More Posts', 'mindfulseo'); ?>
+                        </a>
+                        <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-skip" id="wizard-finish-btn">
+                            <?php _e('Go to Dashboard', 'mindfulseo'); ?>
+                        </button>
+                    </div>
                 </div>
             </div>
             
             <div class="mfseo-wizard-actions" id="wizard-step-4-actions">
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary" id="wizard-step-4-back">
-                    &larr; <?php _e('Back', 'mindfulseo'); ?>
-                </button>
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-4-optimize" <?php disabled(empty($recent_posts)); ?>>
-                    <span class="dashicons dashicons-superhero-alt"></span>
-                    <?php _e('Optimize Now', 'mindfulseo'); ?>
-                </button>
-                <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-skip" id="wizard-step-4-skip">
-                    <?php _e('Skip &mdash; finish setup', 'mindfulseo'); ?>
-                </button>
+                <div class="mfseo-wizard-actions__lead">
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-secondary" id="wizard-step-4-back">
+                        &larr; <?php _e('Back', 'mindfulseo'); ?>
+                    </button>
+                </div>
+                <div class="mfseo-wizard-actions__trail">
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-primary" id="wizard-step-4-optimize" <?php disabled(empty($recent_posts)); ?>>
+                        <span class="dashicons dashicons-superhero-alt"></span>
+                        <?php _e('Optimize Now', 'mindfulseo'); ?>
+                    </button>
+                    <button type="button" class="mfseo-wizard-btn mfseo-wizard-btn-skip" id="wizard-step-4-skip">
+                        <?php _e('Skip &mdash; finish setup', 'mindfulseo'); ?>
+                    </button>
+                </div>
             </div>
         </div>
         <?php

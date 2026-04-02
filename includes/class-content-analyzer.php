@@ -300,6 +300,35 @@ class MFSEO_Content_Analyzer {
     }
 
     /**
+     * Remove trailing stop-words often left when the model or n-grams clip a sentence
+     * (e.g. "lama zopa rinpoche for" → "lama zopa rinpoche").
+     *
+     * @param string $phrase Phrase.
+     * @return string
+     */
+    private function strip_trailing_keyword_noise_words($phrase) {
+        $phrase = trim(preg_replace('/\s+/u', ' ', $phrase));
+        if ($phrase === '') {
+            return '';
+        }
+        // Only strip tokens that are rarely valid as the final word of a search query on their own.
+        $noise = array(
+            'for', 'and', 'or', 'the', 'a', 'an', 'of', 'to', 'in', 'on', 'at', 'as', 'by',
+            'is', 'are', 'be', 'been', 'was', 'were', 'with', 'from', 'about', 'into', 'onto', 'that', 'this',
+        );
+        $parts = preg_split('/\s+/u', $phrase, -1, PREG_SPLIT_NO_EMPTY);
+        $guard = 0;
+        while (count($parts) > 1 && $guard++ < 10) {
+            $last = strtolower(end($parts));
+            if (!in_array($last, $noise, true)) {
+                break;
+            }
+            array_pop($parts);
+        }
+        return implode(' ', $parts);
+    }
+
+    /**
      * Apply guideline capitalization map (merge with detected entities in fix_keyword_capitalization).
      *
      * @param string $keyword Keyword.
@@ -307,6 +336,10 @@ class MFSEO_Content_Analyzer {
      */
     private function sanitize_keyword_phrase_with_guidelines($keyword) {
         if ($keyword === '' || $keyword === null) {
+            return null;
+        }
+        $keyword = $this->strip_trailing_keyword_noise_words($keyword);
+        if ($keyword === '') {
             return null;
         }
         $adjusted = $this->apply_keyword_avoid_replacements($keyword);
@@ -1007,7 +1040,12 @@ class MFSEO_Content_Analyzer {
             if ($this->is_junk_keyword($keyword)) {
                 continue;
             }
-            
+
+            $keyword = $this->strip_trailing_keyword_noise_words($keyword);
+            if ($keyword === '' || str_word_count($keyword) < 1) {
+                continue;
+            }
+
             $intent = $this->determine_search_intent($keyword);
             
             // Determine priority based on frequency

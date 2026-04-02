@@ -183,9 +183,10 @@ final class MindfulSEO {
         // Show welcome notice
         set_transient('mindfulseo_activation_notice', true, 60);
         
-        // Set wizard needed flag if not already completed
+        // Set wizard needed flag if not already completed; first admin load redirects to wizard
         if (!get_option('mindfulseo_wizard_completed')) {
             update_option('mindfulseo_wizard_needed', true);
+            update_option('mindfulseo_redirect_wizard_after_activation', '1', false);
         }
         
         // Flush rewrite rules
@@ -501,6 +502,11 @@ final class MindfulSEO {
     public function init() {
         // Check and upgrade database if needed
         $this->check_database_upgrade();
+
+        // Post export/import: register on plugins_loaded so admin-post.php always has handlers.
+        if (class_exists('MFSEO_Post_Import_Export')) {
+            MFSEO_Post_Import_Export::init();
+        }
         
         // Initialize core components only if classes exist
         if (class_exists('MFSEO_SEO_Plugin_Adapter')) {
@@ -536,6 +542,20 @@ final class MindfulSEO {
      * Initialize admin-specific functionality
      */
     public function admin_init() {
+        // First visit after install/activation: go straight to setup wizard (when not completed).
+        if (! wp_doing_ajax()
+            && current_user_can('manage_options')
+            && ! get_option('mindfulseo_wizard_completed')
+            && get_option('mindfulseo_redirect_wizard_after_activation') === '1'
+        ) {
+            $on_wizard = isset($_GET['page']) && sanitize_key(wp_unslash($_GET['page'])) === 'mindfulseo-wizard';
+            delete_option('mindfulseo_redirect_wizard_after_activation');
+            if (! $on_wizard) {
+                wp_safe_redirect(admin_url('admin.php?page=mindfulseo-wizard'));
+                exit;
+            }
+        }
+
         // Show activation notice
         if (get_transient('mindfulseo_activation_notice')) {
             add_action('admin_notices', array($this, 'activation_notice'));
