@@ -608,7 +608,7 @@ class MFSEO_Post_Import_Export {
                         </tr>
                     </table>
 
-                    <?php submit_button( __( 'Run Import', 'mindfulseo' ), 'primary', 'submit', true, array( 'id' => 'mfseo-import-btn' ) ); ?>
+                    <?php submit_button( __( 'Run Import', 'mindfulseo' ), 'primary', 'mfseo-import-btn', true ); ?>
                     <p id="mfseo-import-js-note" style="margin:4px 0 0;font-size:12px;color:#999;display:none;">
                         <?php esc_html_e( 'AJAX mode active — result shown inline.', 'mindfulseo' ); ?>
                     </p>
@@ -704,7 +704,9 @@ class MFSEO_Post_Import_Export {
             /* ── Import via AJAX → inline result (no page reload) ── */
             document.addEventListener('DOMContentLoaded', function () {
                 var importForm = document.getElementById('mfseo-import-form');
-                var importBtn  = document.getElementById('mfseo-import-btn');
+                /* submit_button() auto-generates id from $name; use querySelector as belt-and-suspenders */
+                var importBtn  = document.getElementById('mfseo-import-btn') ||
+                                 (importForm && importForm.querySelector('input[type="submit"], button[type="submit"]'));
                 var importSec  = document.getElementById('mfseo-import-section');
                 var importNote = document.getElementById('mfseo-import-js-note');
 
