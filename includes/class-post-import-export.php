@@ -744,9 +744,16 @@ class MFSEO_Post_Import_Export {
                 /* Show the "AJAX mode active" note so we know JS reached this point */
                 if (importNote) { importNote.style.display = 'block'; }
 
-                importForm.addEventListener('submit', function (e) {
-                    e.preventDefault();
+                /* Convert the button to type=button so it can never trigger a form POST.
+                   We listen for the click directly — no form submit event, no e.preventDefault(). */
+                if (importBtn) {
+                    importBtn.type = 'button';
+                }
 
+                /* Block the form submit entirely as a safety net */
+                importForm.addEventListener('submit', function (e) { e.preventDefault(); });
+
+                function runImport() {
                     var fileInput = document.getElementById('mfseo-import-zip');
                     if (!fileInput || !fileInput.files || !fileInput.files.length) {
                         showImportFeedback(
@@ -821,7 +828,12 @@ class MFSEO_Post_Import_Export {
                             false
                         );
                     });
-                });
+                }
+
+                /* Click listener on the button (type=button, so no form submit at all) */
+                if (importBtn) {
+                    importBtn.addEventListener('click', runImport);
+                }
             });
         })();
         </script>
