@@ -365,26 +365,6 @@ class MFSEO_Post_Import_Export {
             <h1><?php esc_html_e( 'Import / Export', 'mindfulseo' ); ?></h1>
             <p class="description"><?php esc_html_e( 'Export posts with all SEO fields, taxonomies, custom meta, featured images, HTML content, and MindfulSEO optimisation records as a ZIP. Re-import on any site running MindfulSEO — full round-trip guaranteed.', 'mindfulseo' ); ?></p>
 
-            <?php if ( $import_status === 'done' ) : ?>
-                <div class="notice notice-success is-dismissible"><p>
-                    <?php
-                    printf(
-                        /* translators: 1: updated count, 2: created count, 3: skipped count */
-                        esc_html__( 'Import complete. Updated: %1$d · Created: %2$d · Skipped: %3$d.', 'mindfulseo' ),
-                        isset( $_GET['u'] ) ? (int) $_GET['u'] : 0,
-                        isset( $_GET['c'] ) ? (int) $_GET['c'] : 0,
-                        isset( $_GET['s'] ) ? (int) $_GET['s'] : 0
-                    );
-                    ?>
-                </p></div>
-
-            <?php elseif ( $import_status !== '' && isset( $error_messages[ $import_status ] ) ) : ?>
-                <div class="notice notice-error is-dismissible"><p><?php echo esc_html( $error_messages[ $import_status ] ); ?></p></div>
-
-            <?php elseif ( $import_status !== '' ) : ?>
-                <div class="notice notice-error is-dismissible"><p><?php esc_html_e( 'Import failed. Check the PHP error log for details.', 'mindfulseo' ); ?></p></div>
-            <?php endif; ?>
-
             <!-- ── EXPORT ─────────────────────────────────────────── -->
             <div class="card" style="max-width:680px;padding:20px 24px;margin-top:20px;">
                 <h2 style="margin-top:0;"><?php esc_html_e( 'Export', 'mindfulseo' ); ?></h2>
@@ -453,8 +433,51 @@ class MFSEO_Post_Import_Export {
             </div>
 
             <!-- ── IMPORT ─────────────────────────────────────────── -->
-            <div class="card" style="max-width:680px;padding:20px 24px;margin-top:20px;">
+            <div id="mfseo-import-section" class="card" style="max-width:680px;padding:20px 24px;margin-top:20px;scroll-margin-top:46px;">
                 <h2 style="margin-top:0;"><?php esc_html_e( 'Import', 'mindfulseo' ); ?></h2>
+
+                <?php if ( $import_status === 'done' ) : ?>
+                    <?php
+                    $u_done = isset( $_GET['u'] ) ? (int) $_GET['u'] : 0;
+                    $c_done = isset( $_GET['c'] ) ? (int) $_GET['c'] : 0;
+                    $s_done = isset( $_GET['s'] ) ? (int) $_GET['s'] : 0;
+                    $batch_url = admin_url( 'admin.php?page=mindfulseo-batch-optimize' );
+                    $posts_url = admin_url( 'edit.php' );
+                    ?>
+                    <div id="mfseo-import-feedback" class="notice notice-success" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;">
+                        <p style="margin:0 0 10px;font-size:14px;">
+                            <strong><?php esc_html_e( 'Import finished successfully.', 'mindfulseo' ); ?></strong>
+                        </p>
+                        <p style="margin:0 0 12px;">
+                            <?php
+                            printf(
+                                /* translators: 1: updated count, 2: created count, 3: skipped count */
+                                esc_html__( 'Updated: %1$d · Created: %2$d · Skipped: %3$d.', 'mindfulseo' ),
+                                $u_done,
+                                $c_done,
+                                $s_done
+                            );
+                            ?>
+                        </p>
+                        <p style="margin:0;">
+                            <a href="<?php echo esc_url( $batch_url ); ?>" class="button button-primary"><?php esc_html_e( 'Open Batch Optimizer', 'mindfulseo' ); ?></a>
+                            <a href="<?php echo esc_url( $posts_url ); ?>" class="button"><?php esc_html_e( 'All posts', 'mindfulseo' ); ?></a>
+                        </p>
+                    </div>
+
+                <?php elseif ( $import_status !== '' && isset( $error_messages[ $import_status ] ) ) : ?>
+                    <div id="mfseo-import-feedback" class="notice notice-error" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;">
+                        <p style="margin:0;font-size:14px;"><strong><?php esc_html_e( 'Import could not complete.', 'mindfulseo' ); ?></strong></p>
+                        <p style="margin:8px 0 0;"><?php echo esc_html( $error_messages[ $import_status ] ); ?></p>
+                    </div>
+
+                <?php elseif ( $import_status !== '' ) : ?>
+                    <div id="mfseo-import-feedback" class="notice notice-error" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;">
+                        <p style="margin:0;font-size:14px;"><strong><?php esc_html_e( 'Import could not complete.', 'mindfulseo' ); ?></strong></p>
+                        <p style="margin:8px 0 0;"><?php esc_html_e( 'Check the PHP error log for details.', 'mindfulseo' ); ?></p>
+                    </div>
+                <?php endif; ?>
+
                 <p><?php esc_html_e( 'Upload a ZIP exported by MindfulSEO. Posts are matched by slug + post type.', 'mindfulseo' ); ?></p>
 
                 <form id="mfseo-import-form" method="post"
@@ -604,6 +627,22 @@ class MFSEO_Post_Import_Export {
                     importBtn.value = <?php echo wp_json_encode( __( 'Importing…', 'mindfulseo' ) ); ?>;
                 });
             }
+
+            /* After admin-post.php redirect, land on Import feedback (green/red banner). */
+            document.addEventListener('DOMContentLoaded', function () {
+                try {
+                    var params = new URLSearchParams(window.location.search);
+                    if (!params.get('import')) {
+                        return;
+                    }
+                    var sec = document.getElementById('mfseo-import-section');
+                    if (sec) {
+                        setTimeout(function () {
+                            sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }, 150);
+                    }
+                } catch (e) {}
+            });
         })();
         </script>
         <?php
@@ -754,18 +793,7 @@ class MFSEO_Post_Import_Export {
         // phpcs:ignore WordPress.PHP.NoSilencedErrors
         @unlink( $persisted );
 
-        wp_safe_redirect(
-            add_query_arg(
-                array(
-                    'page'   => 'mindfulseo-import-export',
-                    'import' => 'done',
-                    'u'      => $updated,
-                    'c'      => $created,
-                    's'      => $skipped,
-                ),
-                admin_url( 'admin.php' )
-            )
-        );
+        wp_safe_redirect( self::import_done_redirect_url( $updated, $created, $skipped ) );
         exit;
     }
 
@@ -1097,10 +1125,35 @@ class MFSEO_Post_Import_Export {
     // =========================================================
 
     private static function ie_redirect( $code ) {
-        return add_query_arg(
+        $url = add_query_arg(
             array( 'page' => 'mindfulseo-import-export', 'import' => $code ),
             admin_url( 'admin.php' )
         );
+
+        return $url . '#mfseo-import-section';
+    }
+
+    /**
+     * Redirect URL after a successful import (fragment scrolls to the feedback banner).
+     *
+     * @param int $updated Updated count.
+     * @param int $created Created count.
+     * @param int $skipped Skipped count.
+     * @return string
+     */
+    private static function import_done_redirect_url( $updated, $created, $skipped ) {
+        $url = add_query_arg(
+            array(
+                'page'   => 'mindfulseo-import-export',
+                'import' => 'done',
+                'u'      => (int) $updated,
+                'c'      => (int) $created,
+                's'      => (int) $skipped,
+            ),
+            admin_url( 'admin.php' )
+        );
+
+        return $url . '#mfseo-import-section';
     }
 
     /**
