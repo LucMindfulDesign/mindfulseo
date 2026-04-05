@@ -608,9 +608,12 @@ class MFSEO_Post_Import_Export {
                         </tr>
                     </table>
 
-                    <?php submit_button( __( 'Run Import', 'mindfulseo' ), 'primary', 'mfseo-import-btn', true ); ?>
-                    <p id="mfseo-import-js-note" style="margin:4px 0 0;font-size:12px;color:#999;display:none;">
-                        <?php esc_html_e( 'AJAX mode active — result shown inline.', 'mindfulseo' ); ?>
+                    <p class="submit">
+                        <input type="button"
+                               id="mfseo-import-btn"
+                               class="button button-primary"
+                               value="<?php echo esc_attr( __( 'Run Import', 'mindfulseo' ) ); ?>"
+                               onclick="mfseoRunImport()">
                     </p>
                 </form>
             </div>
@@ -701,143 +704,90 @@ class MFSEO_Post_Import_Export {
                 });
             }
 
-            /* ── Import via AJAX → inline result (no page reload) ── */
-            document.addEventListener('DOMContentLoaded', function () {
-                var importForm = document.getElementById('mfseo-import-form');
-                /* submit_button() auto-generates id from $name; use querySelector as belt-and-suspenders */
-                var importBtn  = document.getElementById('mfseo-import-btn') ||
-                                 (importForm && importForm.querySelector('input[type="submit"], button[type="submit"]'));
-                var importSec  = document.getElementById('mfseo-import-section');
-                var importNote = document.getElementById('mfseo-import-js-note');
+        })();
 
-                var importErrorMessages = <?php echo wp_json_encode( $error_messages ); ?>;
+        /* ── mfseoRunImport — global function called by the button's onclick attribute.
+               Defined outside any IIFE so it is always in window scope when the button
+               is clicked, regardless of script load order or event propagation. ── */
+        window.mfseoRunImport = function () {
+            var btn      = document.getElementById('mfseo-import-btn');
+            var form     = document.getElementById('mfseo-import-form');
+            var sec      = document.getElementById('mfseo-import-section');
+            var fileInput = document.getElementById('mfseo-import-zip');
 
-                function showImportFeedback(html, isSuccess) {
-                    var existing = document.getElementById('mfseo-import-feedback');
-                    if (existing) { existing.parentNode.removeChild(existing); }
-
-                    var div = document.createElement('div');
-                    div.id = 'mfseo-import-feedback';
-                    div.className = 'notice ' + (isSuccess ? 'notice-success' : 'notice-error');
-                    div.setAttribute('role', isSuccess ? 'status' : 'alert');
-                    div.style.cssText = 'margin:0 0 18px;padding:12px 14px;border-left-width:4px;';
-                    div.innerHTML = html;
-
-                    /* Insert before the form, or fall back to appending inside the section */
-                    if (importForm && importForm.parentNode) {
-                        importForm.parentNode.insertBefore(div, importForm);
-                    } else if (importSec) {
-                        importSec.appendChild(div);
-                    } else {
-                        document.body.appendChild(div);
-                    }
-
-                    var target = importSec || div;
-                    setTimeout(function () {
-                        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    }, 80);
+            function showFeedback(html, ok) {
+                var old = document.getElementById('mfseo-import-feedback');
+                if (old) { old.parentNode.removeChild(old); }
+                var d = document.createElement('div');
+                d.id = 'mfseo-import-feedback';
+                d.className = 'notice ' + (ok ? 'notice-success' : 'notice-error');
+                d.setAttribute('role', ok ? 'status' : 'alert');
+                d.style.cssText = 'margin:0 0 18px;padding:12px 14px;border-left-width:4px;';
+                d.innerHTML = html;
+                if (form && form.parentNode) {
+                    form.parentNode.insertBefore(d, form);
+                } else if (sec) {
+                    sec.appendChild(d);
+                } else {
+                    document.body.appendChild(d);
                 }
+                var target = sec || d;
+                setTimeout(function () { target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 80);
+            }
 
-                if (!importForm) {
-                    /* Form not found — skip AJAX; page will fall back to normal POST */
+            if (!fileInput || !fileInput.files || !fileInput.files.length) {
+                showFeedback('<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Please choose a ZIP file first.', 'mindfulseo' ) ); ?></strong></p>', false);
+                return;
+            }
+
+            if (btn) { btn.disabled = true; btn.value = <?php echo wp_json_encode( __( 'Importing…', 'mindfulseo' ) ); ?>; }
+
+            var fd = new FormData(form);
+            fd.set('action', 'mfseo_do_import');
+
+            var errorMessages = <?php echo wp_json_encode( $error_messages ); ?>;
+
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', <?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>, true);
+            xhr.withCredentials = true;
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState !== 4) { return; }
+                if (btn) { btn.disabled = false; btn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>; }
+                var text = xhr.responseText || '';
+                var resp;
+                try {
+                    var start = text.indexOf('{"success"');
+                    if (start === -1) { start = text.indexOf('{"error"'); }
+                    resp = JSON.parse(start >= 0 ? text.slice(start) : text);
+                } catch (e) {
+                    showFeedback(
+                        '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Import could not complete.', 'mindfulseo' ) ); ?></strong></p>' +
+                        '<p style="margin:8px 0 0;">Server response (status ' + xhr.status + '): ' + text.slice(0, 300) + '</p>',
+                        false
+                    );
                     return;
                 }
-
-                /* Show the "AJAX mode active" note so we know JS reached this point */
-                if (importNote) { importNote.style.display = 'block'; }
-
-                /* Convert the button to type=button so it can never trigger a form POST.
-                   We listen for the click directly — no form submit event, no e.preventDefault(). */
-                if (importBtn) {
-                    importBtn.type = 'button';
+                if (resp && resp.success) {
+                    var d = resp.data;
+                    showFeedback(
+                        '<p style="margin:0 0 10px;font-size:14px;"><strong><?php echo esc_js( __( 'Import finished successfully.', 'mindfulseo' ) ); ?></strong></p>' +
+                        '<p style="margin:0 0 12px;"><?php echo esc_js( __( 'Updated:', 'mindfulseo' ) ); ?> ' + d.u + ' &middot; <?php echo esc_js( __( 'Created:', 'mindfulseo' ) ); ?> ' + d.c + ' &middot; <?php echo esc_js( __( 'Skipped:', 'mindfulseo' ) ); ?> ' + d.s + '</p>' +
+                        '<p style="margin:0;"><a href="<?php echo esc_js( admin_url( 'admin.php?page=mindfulseo-batch-optimize' ) ); ?>" class="button button-primary"><?php echo esc_js( __( 'Open Batch Optimizer', 'mindfulseo' ) ); ?></a> ' +
+                        '<a href="<?php echo esc_js( admin_url( 'edit.php' ) ); ?>" class="button"><?php echo esc_js( __( 'All posts', 'mindfulseo' ) ); ?></a></p>',
+                        true
+                    );
+                } else {
+                    var code = (resp && typeof resp.data === 'string') ? resp.data : 'unknown';
+                    var msg  = errorMessages[code] || ('Import failed (code: ' + code + ').');
+                    showFeedback(
+                        '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Import could not complete.', 'mindfulseo' ) ); ?></strong></p>' +
+                        '<p style="margin:8px 0 0;">' + msg + '</p>',
+                        false
+                    );
                 }
-
-                /* Block the form submit entirely as a safety net */
-                importForm.addEventListener('submit', function (e) { e.preventDefault(); });
-
-                function runImport() {
-                    var fileInput = document.getElementById('mfseo-import-zip');
-                    if (!fileInput || !fileInput.files || !fileInput.files.length) {
-                        showImportFeedback(
-                            '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Please choose a ZIP file first.', 'mindfulseo' ) ); ?></strong></p>',
-                            false
-                        );
-                        return;
-                    }
-
-                    if (importBtn) {
-                        importBtn.disabled = true;
-                        importBtn.value = <?php echo wp_json_encode( __( 'Importing…', 'mindfulseo' ) ); ?>;
-                    }
-
-                    var existing = document.getElementById('mfseo-import-feedback');
-                    if (existing) { existing.parentNode.removeChild(existing); }
-
-                    var fd = new FormData(importForm);
-                    fd.set('action', 'mfseo_do_import');
-
-                    fetch(<?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>, {
-                        method: 'POST',
-                        body: fd,
-                        credentials: 'same-origin'
-                    })
-                    .then(function (r) { return r.text(); })
-                    .then(function (text) {
-                        /* Strip any debug output before the JSON */
-                        var start = text.indexOf('{"success"');
-                        if (start === -1) { start = text.indexOf('{"error"'); }
-                        try {
-                            return JSON.parse(start >= 0 ? text.slice(start) : text);
-                        } catch (_) {
-                            throw new Error('Server returned unexpected response:\n' + text.slice(0, 400));
-                        }
-                    })
-                    .then(function (resp) {
-                        if (importBtn) {
-                            importBtn.disabled = false;
-                            importBtn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>;
-                        }
-
-                        if (resp.success) {
-                            var d = resp.data;
-                            var batchUrl = <?php echo wp_json_encode( admin_url( 'admin.php?page=mindfulseo-batch-optimize' ) ); ?>;
-                            var postsUrl = <?php echo wp_json_encode( admin_url( 'edit.php' ) ); ?>;
-                            showImportFeedback(
-                                '<p style="margin:0 0 10px;font-size:14px;"><strong><?php echo esc_js( __( 'Import finished successfully.', 'mindfulseo' ) ); ?></strong></p>' +
-                                '<p style="margin:0 0 12px;"><?php echo esc_js( __( 'Updated:', 'mindfulseo' ) ); ?> ' + d.u + ' &middot; <?php echo esc_js( __( 'Created:', 'mindfulseo' ) ); ?> ' + d.c + ' &middot; <?php echo esc_js( __( 'Skipped:', 'mindfulseo' ) ); ?> ' + d.s + '</p>' +
-                                '<p style="margin:0;"><a href="' + batchUrl + '" class="button button-primary"><?php echo esc_js( __( 'Open Batch Optimizer', 'mindfulseo' ) ); ?></a> ' +
-                                '<a href="' + postsUrl + '" class="button"><?php echo esc_js( __( 'All posts', 'mindfulseo' ) ); ?></a></p>',
-                                true
-                            );
-                        } else {
-                            var code = typeof resp.data === 'string' ? resp.data : 'unknown';
-                            var msg  = importErrorMessages[code] || ('Import failed (code: ' + code + '). Check the PHP error log.');
-                            showImportFeedback(
-                                '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Import could not complete.', 'mindfulseo' ) ); ?></strong></p>' +
-                                '<p style="margin:8px 0 0;">' + msg + '</p>',
-                                false
-                            );
-                        }
-                    })
-                    .catch(function (err) {
-                        if (importBtn) {
-                            importBtn.disabled = false;
-                            importBtn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>;
-                        }
-                        showImportFeedback(
-                            '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Import could not complete.', 'mindfulseo' ) ); ?></strong></p>' +
-                            '<p style="margin:8px 0 0;">' + err.message + '</p>',
-                            false
-                        );
-                    });
-                }
-
-                /* Click listener on the button (type=button, so no form submit at all) */
-                if (importBtn) {
-                    importBtn.addEventListener('click', runImport);
-                }
-            });
-        })();
+            };
+            xhr.send(fd);
+        };
         </script>
         <?php
     }
