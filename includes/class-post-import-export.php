@@ -609,6 +609,9 @@ class MFSEO_Post_Import_Export {
                     </table>
 
                     <?php submit_button( __( 'Run Import', 'mindfulseo' ), 'primary', 'submit', true, array( 'id' => 'mfseo-import-btn' ) ); ?>
+                    <p id="mfseo-import-js-note" style="margin:4px 0 0;font-size:12px;color:#999;display:none;">
+                        <?php esc_html_e( 'AJAX mode active — result shown inline.', 'mindfulseo' ); ?>
+                    </p>
                 </form>
             </div>
         </div>
@@ -617,18 +620,20 @@ class MFSEO_Post_Import_Export {
         (function () {
 
             /* ── Quantity "Other…" toggle ── */
-            var sel  = document.getElementById('mfseo-ex-limit');
-            var wrap = document.getElementById('mfseo-limit-custom-wrap');
-            var inp  = document.getElementById('mfseo-limit-custom');
-            if (sel && wrap && inp) {
-                function syncLimit() {
-                    var show = sel.value === 'other';
-                    wrap.style.display = show ? 'inline-block' : 'none';
-                    inp.required = show;
+            document.addEventListener('DOMContentLoaded', function () {
+                var sel  = document.getElementById('mfseo-ex-limit');
+                var wrap = document.getElementById('mfseo-limit-custom-wrap');
+                var inp  = document.getElementById('mfseo-limit-custom');
+                if (sel && wrap && inp) {
+                    function syncLimit() {
+                        var show = sel.value === 'other';
+                        wrap.style.display = show ? 'inline-block' : 'none';
+                        inp.required = show;
+                    }
+                    sel.addEventListener('change', syncLimit);
+                    syncLimit();
                 }
-                sel.addEventListener('change', syncLimit);
-                syncLimit();
-            }
+            });
 
             /* ── Export via AJAX → <a download> ── */
             var exportForm   = document.getElementById('mfseo-export-form');
@@ -697,36 +702,48 @@ class MFSEO_Post_Import_Export {
             }
 
             /* ── Import via AJAX → inline result (no page reload) ── */
-            var importForm = document.getElementById('mfseo-import-form');
-            var importBtn  = document.getElementById('mfseo-import-btn');
-            var importSec  = document.getElementById('mfseo-import-section');
+            document.addEventListener('DOMContentLoaded', function () {
+                var importForm = document.getElementById('mfseo-import-form');
+                var importBtn  = document.getElementById('mfseo-import-btn');
+                var importSec  = document.getElementById('mfseo-import-section');
+                var importNote = document.getElementById('mfseo-import-js-note');
 
-            var importErrorMessages = <?php echo wp_json_encode( $error_messages ); ?>;
+                var importErrorMessages = <?php echo wp_json_encode( $error_messages ); ?>;
 
-            function showImportFeedback(html, isSuccess) {
-                var existing = document.getElementById('mfseo-import-feedback');
-                if (existing) existing.parentNode.removeChild(existing);
+                function showImportFeedback(html, isSuccess) {
+                    var existing = document.getElementById('mfseo-import-feedback');
+                    if (existing) { existing.parentNode.removeChild(existing); }
 
-                var div = document.createElement('div');
-                div.id = 'mfseo-import-feedback';
-                div.className = 'notice ' + (isSuccess ? 'notice-success' : 'notice-error');
-                div.setAttribute('role', isSuccess ? 'status' : 'alert');
-                div.style.cssText = 'margin:0 0 18px;padding:12px 14px;border-left-width:4px;';
-                div.innerHTML = html;
+                    var div = document.createElement('div');
+                    div.id = 'mfseo-import-feedback';
+                    div.className = 'notice ' + (isSuccess ? 'notice-success' : 'notice-error');
+                    div.setAttribute('role', isSuccess ? 'status' : 'alert');
+                    div.style.cssText = 'margin:0 0 18px;padding:12px 14px;border-left-width:4px;';
+                    div.innerHTML = html;
 
-                var form = document.getElementById('mfseo-import-form');
-                if (form && form.parentNode) {
-                    form.parentNode.insertBefore(div, form);
-                }
+                    /* Insert before the form, or fall back to appending inside the section */
+                    if (importForm && importForm.parentNode) {
+                        importForm.parentNode.insertBefore(div, importForm);
+                    } else if (importSec) {
+                        importSec.appendChild(div);
+                    } else {
+                        document.body.appendChild(div);
+                    }
 
-                if (importSec) {
+                    var target = importSec || div;
                     setTimeout(function () {
-                        importSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }, 80);
                 }
-            }
 
-            if (importForm && importBtn) {
+                if (!importForm) {
+                    /* Form not found — skip AJAX; page will fall back to normal POST */
+                    return;
+                }
+
+                /* Show the "AJAX mode active" note so we know JS reached this point */
+                if (importNote) { importNote.style.display = 'block'; }
+
                 importForm.addEventListener('submit', function (e) {
                     e.preventDefault();
 
@@ -739,11 +756,13 @@ class MFSEO_Post_Import_Export {
                         return;
                     }
 
-                    importBtn.disabled = true;
-                    importBtn.value = <?php echo wp_json_encode( __( 'Importing…', 'mindfulseo' ) ); ?>;
+                    if (importBtn) {
+                        importBtn.disabled = true;
+                        importBtn.value = <?php echo wp_json_encode( __( 'Importing…', 'mindfulseo' ) ); ?>;
+                    }
 
                     var existing = document.getElementById('mfseo-import-feedback');
-                    if (existing) existing.parentNode.removeChild(existing);
+                    if (existing) { existing.parentNode.removeChild(existing); }
 
                     var fd = new FormData(importForm);
                     fd.set('action', 'mfseo_do_import');
@@ -755,17 +774,20 @@ class MFSEO_Post_Import_Export {
                     })
                     .then(function (r) { return r.text(); })
                     .then(function (text) {
+                        /* Strip any debug output before the JSON */
                         var start = text.indexOf('{"success"');
-                        if (start === -1) start = text.indexOf('{"error"');
+                        if (start === -1) { start = text.indexOf('{"error"'); }
                         try {
                             return JSON.parse(start >= 0 ? text.slice(start) : text);
                         } catch (_) {
-                            throw new Error('Unexpected response: ' + text.slice(0, 300));
+                            throw new Error('Server returned unexpected response:\n' + text.slice(0, 400));
                         }
                     })
                     .then(function (resp) {
-                        importBtn.disabled = false;
-                        importBtn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>;
+                        if (importBtn) {
+                            importBtn.disabled = false;
+                            importBtn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>;
+                        }
 
                         if (resp.success) {
                             var d = resp.data;
@@ -780,7 +802,7 @@ class MFSEO_Post_Import_Export {
                             );
                         } else {
                             var code = typeof resp.data === 'string' ? resp.data : 'unknown';
-                            var msg  = importErrorMessages[code] || ('Import failed (' + code + ').');
+                            var msg  = importErrorMessages[code] || ('Import failed (code: ' + code + '). Check the PHP error log.');
                             showImportFeedback(
                                 '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Import could not complete.', 'mindfulseo' ) ); ?></strong></p>' +
                                 '<p style="margin:8px 0 0;">' + msg + '</p>',
@@ -789,8 +811,10 @@ class MFSEO_Post_Import_Export {
                         }
                     })
                     .catch(function (err) {
-                        importBtn.disabled = false;
-                        importBtn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>;
+                        if (importBtn) {
+                            importBtn.disabled = false;
+                            importBtn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>;
+                        }
                         showImportFeedback(
                             '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Import could not complete.', 'mindfulseo' ) ); ?></strong></p>' +
                             '<p style="margin:8px 0 0;">' + err.message + '</p>',
@@ -798,7 +822,7 @@ class MFSEO_Post_Import_Export {
                         );
                     });
                 });
-            }
+            });
         })();
         </script>
         <?php
