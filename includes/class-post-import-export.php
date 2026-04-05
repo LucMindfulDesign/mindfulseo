@@ -1066,19 +1066,22 @@ class MFSEO_Post_Import_Export {
          * SEO in the manifest often comes from Rank Math / Yoast post meta. Many sites only
          * store keyword/title/description inside MindfulSEO optimization rows until "Apply"
          * is run — so CSV columns can be empty while mfseo/*.json has the real data.
-         * Merge optimization rows into $seo_data, then persist via adapter (portable + plugin).
+         * Merge mfseo/*.json whenever that package was imported (even if "SEO" CSV import
+         * was unchecked) so post meta and Batch Optimizer stay in sync.
          */
-        if ( $do_seo && $adapter && is_array( $mfseo_rows_for_seo ) && ! empty( $mfseo_rows_for_seo ) ) {
-            $seo_data = self::merge_seo_data_from_mfseo_rows( $seo_data, $mfseo_rows_for_seo );
+        $mfseo_had_rows = is_array( $mfseo_rows_for_seo ) && ! empty( $mfseo_rows_for_seo );
+        if ( $adapter && $mfseo_had_rows ) {
+            $base_for_merge = $do_seo ? $seo_data : array();
+            $seo_data       = self::merge_seo_data_from_mfseo_rows( $base_for_merge, $mfseo_rows_for_seo );
         }
 
-        $seo_nonempty = $do_seo && (
+        $seo_nonempty = (
             ( isset( $seo_data['keyword'] ) && $seo_data['keyword'] !== '' )
             || ( isset( $seo_data['title'] ) && $seo_data['title'] !== '' )
             || ( isset( $seo_data['description'] ) && $seo_data['description'] !== '' )
         );
 
-        if ( $seo_nonempty && $adapter ) {
+        if ( $adapter && $seo_nonempty && ( $do_seo || $mfseo_had_rows ) ) {
             $adapter->set_all_seo_meta( $post_id, $seo_data );
             $row_changed = true;
         }
@@ -1348,7 +1351,13 @@ class MFSEO_Post_Import_Export {
         if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) !== $table ) {
             return;
         }
-        $now = current_time( 'mysql' );
+        /*
+         * Export stores rows newest-first (DESC). Inserting in that order gives the oldest row
+         * the highest id; the Batch Optimizer used MAX(id) as "latest" and showed stale/empty
+         * SEO. Insert oldest-first so newest row gets the highest id (matches normal saves).
+         */
+        $rows = array_reverse( $rows );
+        $now  = current_time( 'mysql' );
         foreach ( $rows as $row ) {
             if ( ! is_array( $row ) ) {
                 continue;

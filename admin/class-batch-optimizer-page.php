@@ -43,7 +43,8 @@ class MFSEO_Batch_Optimizer_Page {
                 'pending' => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(DISTINCT post_id) FROM {$opts_table} WHERE status = %s", 'pending' ) ),
                 'never_optimized' => 0,
             );
-            $stats['never_optimized'] = $stats['total_posts'] - $stats['optimized'] - $stats['pending'];
+            // Optimisation rows can reference trashed/deleted posts or other post types — avoid negative "Never".
+            $stats['never_optimized'] = max( 0, $stats['total_posts'] - $stats['optimized'] - $stats['pending'] );
         } else {
             $stats = array(
                 'total_posts' => $total_count,
@@ -675,8 +676,34 @@ class MFSEO_Batch_Optimizer_Page {
     }
     
     /**
+     * LEFT JOIN fragment: one row per post — latest optimisation by optimization_date, then id.
+     * (Legacy imports inserted newest-first so MAX(id) alone pointed at an old empty row.)
+     *
+     * @param string $opts_table Full table name including prefix.
+     * @return string Safe SQL fragment (table name is passed from plugin code only).
+     */
+    private function get_latest_optimization_join_sql( $opts_table ) {
+        return "
+            LEFT JOIN (
+                SELECT o1.post_id, o1.status, o1.optimization_date, o1.primary_keyword, o1.seo_title, o1.meta_description
+                FROM {$opts_table} o1
+                INNER JOIN (
+                    SELECT o.post_id, MAX(o.id) AS latest_id
+                    FROM {$opts_table} o
+                    INNER JOIN (
+                        SELECT post_id, MAX(optimization_date) AS max_date
+                        FROM {$opts_table}
+                        GROUP BY post_id
+                    ) md ON o.post_id = md.post_id AND o.optimization_date = md.max_date
+                    GROUP BY o.post_id
+                ) pick ON o1.id = pick.latest_id
+            ) o ON p.ID = o.post_id
+        ";
+    }
+
+    /**
      * Get all posts with their optimization status
-     * 
+     *
      * @param int $per_page Posts per page
      * @param int $offset Offset for pagination
      * @return array Posts with status
@@ -742,6 +769,8 @@ class MFSEO_Batch_Optimizer_Page {
         $params[] = $per_page;
         $params[] = $offset;
 
+        $opt_join = $this->get_latest_optimization_join_sql( $opts_table );
+
         // Get posts with optimization status via LEFT JOIN
         $sql = "
             SELECT 
@@ -757,15 +786,7 @@ class MFSEO_Batch_Optimizer_Page {
                 o.seo_title as opt_seo_title,
                 o.meta_description as opt_meta_description
             FROM {$wpdb->posts} p
-            LEFT JOIN (
-                SELECT post_id, status, optimization_date, primary_keyword, seo_title, meta_description
-                FROM $opts_table o1
-                WHERE id = (
-                    SELECT MAX(id)
-                    FROM $opts_table o2
-                    WHERE o2.post_id = o1.post_id
-                )
-            ) o ON p.ID = o.post_id
+            {$opt_join}
             WHERE $where_sql
             ORDER BY $order_by
             LIMIT %d OFFSET %d
@@ -833,18 +854,12 @@ class MFSEO_Batch_Optimizer_Page {
 
         $where_sql = implode(' AND ', $where);
 
+        $opt_join = $this->get_latest_optimization_join_sql( $opts_table );
+
         $sql = "
             SELECT COUNT(*)
             FROM {$wpdb->posts} p
-            LEFT JOIN (
-                SELECT post_id, status, optimization_date
-                FROM $opts_table o1
-                WHERE id = (
-                    SELECT MAX(id)
-                    FROM $opts_table o2
-                    WHERE o2.post_id = o1.post_id
-                )
-            ) o ON p.ID = o.post_id
+            {$opt_join}
             WHERE $where_sql
         ";
         
