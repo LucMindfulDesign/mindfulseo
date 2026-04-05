@@ -21,7 +21,9 @@
  * This sidesteps all output-buffering, WP_DEBUG_DISPLAY, and headers_sent()
  * issues that plagued the previous PHP-streaming approach.
  *
- * Import still uses admin-post.php (redirect-only, no streaming).
+ * Import: POST targets admin.php?page=mindfulseo-import-export; processing runs on admin_init
+ * and the result is shown on the same request (no redirect flash). admin-post.php remains as
+ * a legacy redirect path.
  *
  * @package MindfulSEO
  * @since   2.5.0
@@ -42,6 +44,14 @@ class MFSEO_Post_Import_Export {
     /** @var bool */
     private static $hooks_registered = false;
 
+    /**
+     * Feedback from an import handled during this HTTP request (admin_init), for the same
+     * request’s render_page() — avoids redirects, user-meta flashes, and object-cache issues.
+     *
+     * @var array<string,mixed>|null
+     */
+    private static $import_feedback_for_current_request = null;
+
     // =========================================================
     // BOOTSTRAP
     // =========================================================
@@ -55,7 +65,10 @@ class MFSEO_Post_Import_Export {
         // Export: AJAX → generate ZIP → return JSON URL → JS clicks <a download>.
         add_action( 'wp_ajax_mfseo_do_export', array( __CLASS__, 'ajax_export' ) );
 
-        // Import: redirect-only response, admin-post.php works fine.
+        // Import: AJAX → run import → return JSON → JS shows result inline (no redirect).
+        add_action( 'wp_ajax_mfseo_do_import', array( __CLASS__, 'ajax_import' ) );
+
+        // Legacy admin-post handler kept for any bookmarked/external POST flows.
         add_action( 'admin_post_' . self::ACTION_IMPORT, array( __CLASS__, 'handle_import' ) );
     }
 
@@ -112,6 +125,40 @@ class MFSEO_Post_Import_Export {
             'url'      => $result['url'],
             'filename' => $result['filename'],
         ) );
+    }
+
+    // =========================================================
+    // IMPORT — AJAX HANDLER  (wp_ajax_mfseo_do_import)
+    // =========================================================
+
+    /**
+     * AJAX handler: run the import upload, return JSON so JS can display inline feedback.
+     *
+     * Uses FormData + fetch() from the browser side — no page reload or redirect needed.
+     * The existing form nonce (mfseo_import_nonce) is included in the FormData and verified here.
+     */
+    public static function ajax_import() {
+        while ( ob_get_level() > 0 ) {
+            ob_end_clean();
+        }
+
+        check_ajax_referer( self::NONCE_IMPORT, 'mfseo_import_nonce' );
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( 'no_permission' );
+        }
+
+        $result = self::run_import_upload( true );
+
+        if ( ! empty( $result['success'] ) ) {
+            wp_send_json_success( array(
+                'u' => (int) ( $result['u'] ?? 0 ),
+                'c' => (int) ( $result['c'] ?? 0 ),
+                's' => (int) ( $result['s'] ?? 0 ),
+            ) );
+        } else {
+            wp_send_json_error( $result['code'] ?? 'unknown' );
+        }
     }
 
     // =========================================================
@@ -348,7 +395,40 @@ class MFSEO_Post_Import_Export {
             wp_die( esc_html__( 'You do not have permission.', 'mindfulseo' ) );
         }
 
-        $import_status = isset( $_GET['import'] ) ? sanitize_key( wp_unslash( $_GET['import'] ) ) : '';
+        /*
+         * Primary: same-request flag from admin_init (POST to this screen). Fallback: user-meta
+         * flash after legacy admin-post redirect; then ?import= query args.
+         */
+        $fb = null;
+        if ( self::$import_feedback_for_current_request !== null ) {
+            $fb                                       = self::$import_feedback_for_current_request;
+            self::$import_feedback_for_current_request = null;
+        }
+        if ( $fb === null ) {
+            $fb = self::take_import_feedback();
+        }
+        $import_status = '';
+        $import_u      = 0;
+        $import_c      = 0;
+        $import_s      = 0;
+        if ( is_array( $fb ) ) {
+            if ( ! empty( $fb['success'] ) ) {
+                $import_status = 'done';
+                $import_u      = (int) ( $fb['u'] ?? 0 );
+                $import_c      = (int) ( $fb['c'] ?? 0 );
+                $import_s      = (int) ( $fb['s'] ?? 0 );
+            } elseif ( ! empty( $fb['code'] ) ) {
+                $import_status = sanitize_key( (string) $fb['code'] );
+            }
+        }
+        if ( $import_status === '' && isset( $_GET['import'] ) ) {
+            $import_status = sanitize_key( wp_unslash( $_GET['import'] ) );
+            $import_u      = isset( $_GET['u'] ) ? (int) $_GET['u'] : 0;
+            $import_c      = isset( $_GET['c'] ) ? (int) $_GET['c'] : 0;
+            $import_s      = isset( $_GET['s'] ) ? (int) $_GET['s'] : 0;
+        }
+
+        $scroll_import_section = ( $import_status !== '' );
 
         $error_messages = array(
             'no_file'       => __( 'No file was uploaded. Please choose a ZIP file before clicking "Run Import".', 'mindfulseo' ),
@@ -359,6 +439,7 @@ class MFSEO_Post_Import_Export {
             'bad_csv'       => __( 'manifest.csv is malformed — missing required "slug" column. Please re-export from MindfulSEO.', 'mindfulseo' ),
             'bad_nonce'     => __( 'Security check failed. Please reload the page and try again.', 'mindfulseo' ),
             'no_permission' => __( 'You do not have permission to import content.', 'mindfulseo' ),
+            'no_zip'        => __( 'PHP ZipArchive extension is required for import.', 'mindfulseo' ),
         );
         ?>
         <div class="wrap mindfulseo-admin-wrap">
@@ -438,13 +519,10 @@ class MFSEO_Post_Import_Export {
 
                 <?php if ( $import_status === 'done' ) : ?>
                     <?php
-                    $u_done = isset( $_GET['u'] ) ? (int) $_GET['u'] : 0;
-                    $c_done = isset( $_GET['c'] ) ? (int) $_GET['c'] : 0;
-                    $s_done = isset( $_GET['s'] ) ? (int) $_GET['s'] : 0;
                     $batch_url = admin_url( 'admin.php?page=mindfulseo-batch-optimize' );
                     $posts_url = admin_url( 'edit.php' );
                     ?>
-                    <div id="mfseo-import-feedback" class="notice notice-success" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;">
+                    <div id="mfseo-import-feedback" class="notice notice-success" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;" role="status">
                         <p style="margin:0 0 10px;font-size:14px;">
                             <strong><?php esc_html_e( 'Import finished successfully.', 'mindfulseo' ); ?></strong>
                         </p>
@@ -453,9 +531,9 @@ class MFSEO_Post_Import_Export {
                             printf(
                                 /* translators: 1: updated count, 2: created count, 3: skipped count */
                                 esc_html__( 'Updated: %1$d · Created: %2$d · Skipped: %3$d.', 'mindfulseo' ),
-                                $u_done,
-                                $c_done,
-                                $s_done
+                                $import_u,
+                                $import_c,
+                                $import_s
                             );
                             ?>
                         </p>
@@ -466,13 +544,13 @@ class MFSEO_Post_Import_Export {
                     </div>
 
                 <?php elseif ( $import_status !== '' && isset( $error_messages[ $import_status ] ) ) : ?>
-                    <div id="mfseo-import-feedback" class="notice notice-error" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;">
+                    <div id="mfseo-import-feedback" class="notice notice-error" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;" role="alert">
                         <p style="margin:0;font-size:14px;"><strong><?php esc_html_e( 'Import could not complete.', 'mindfulseo' ); ?></strong></p>
                         <p style="margin:8px 0 0;"><?php echo esc_html( $error_messages[ $import_status ] ); ?></p>
                     </div>
 
                 <?php elseif ( $import_status !== '' ) : ?>
-                    <div id="mfseo-import-feedback" class="notice notice-error" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;">
+                    <div id="mfseo-import-feedback" class="notice notice-error" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;" role="alert">
                         <p style="margin:0;font-size:14px;"><strong><?php esc_html_e( 'Import could not complete.', 'mindfulseo' ); ?></strong></p>
                         <p style="margin:8px 0 0;"><?php esc_html_e( 'Check the PHP error log for details.', 'mindfulseo' ); ?></p>
                     </div>
@@ -481,10 +559,10 @@ class MFSEO_Post_Import_Export {
                 <p><?php esc_html_e( 'Upload a ZIP exported by MindfulSEO. Posts are matched by slug + post type.', 'mindfulseo' ); ?></p>
 
                 <form id="mfseo-import-form" method="post"
-                      action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
+                      action="<?php echo esc_url( admin_url( 'admin.php?page=mindfulseo-import-export' ) ); ?>"
                       enctype="multipart/form-data">
                     <?php wp_nonce_field( self::NONCE_IMPORT, 'mfseo_import_nonce' ); ?>
-                    <input type="hidden" name="action" value="<?php echo esc_attr( self::ACTION_IMPORT ); ?>">
+                    <input type="hidden" name="mfseo_ie_process_import" value="1">
 
                     <table class="form-table" style="margin-top:0;">
                         <tr>
@@ -618,63 +696,169 @@ class MFSEO_Post_Import_Export {
                 });
             }
 
-            /* ── Import button busy state ── */
+            /* ── Import via AJAX → inline result (no page reload) ── */
             var importForm = document.getElementById('mfseo-import-form');
             var importBtn  = document.getElementById('mfseo-import-btn');
-            if (importForm && importBtn) {
-                importForm.addEventListener('submit', function () {
-                    importBtn.disabled = true;
-                    importBtn.value = <?php echo wp_json_encode( __( 'Importing…', 'mindfulseo' ) ); ?>;
-                });
+            var importSec  = document.getElementById('mfseo-import-section');
+
+            var importErrorMessages = <?php echo wp_json_encode( $error_messages ); ?>;
+
+            function showImportFeedback(html, isSuccess) {
+                var existing = document.getElementById('mfseo-import-feedback');
+                if (existing) existing.parentNode.removeChild(existing);
+
+                var div = document.createElement('div');
+                div.id = 'mfseo-import-feedback';
+                div.className = 'notice ' + (isSuccess ? 'notice-success' : 'notice-error');
+                div.setAttribute('role', isSuccess ? 'status' : 'alert');
+                div.style.cssText = 'margin:0 0 18px;padding:12px 14px;border-left-width:4px;';
+                div.innerHTML = html;
+
+                var form = document.getElementById('mfseo-import-form');
+                if (form && form.parentNode) {
+                    form.parentNode.insertBefore(div, form);
+                }
+
+                if (importSec) {
+                    setTimeout(function () {
+                        importSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }, 80);
+                }
             }
 
-            /* After admin-post.php redirect, land on Import feedback (green/red banner). */
-            document.addEventListener('DOMContentLoaded', function () {
-                try {
-                    var params = new URLSearchParams(window.location.search);
-                    if (!params.get('import')) {
+            if (importForm && importBtn) {
+                importForm.addEventListener('submit', function (e) {
+                    e.preventDefault();
+
+                    var fileInput = document.getElementById('mfseo-import-zip');
+                    if (!fileInput || !fileInput.files || !fileInput.files.length) {
+                        showImportFeedback(
+                            '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Please choose a ZIP file first.', 'mindfulseo' ) ); ?></strong></p>',
+                            false
+                        );
                         return;
                     }
-                    var sec = document.getElementById('mfseo-import-section');
-                    if (sec) {
-                        setTimeout(function () {
-                            sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        }, 150);
-                    }
-                } catch (e) {}
-            });
+
+                    importBtn.disabled = true;
+                    importBtn.value = <?php echo wp_json_encode( __( 'Importing…', 'mindfulseo' ) ); ?>;
+
+                    var existing = document.getElementById('mfseo-import-feedback');
+                    if (existing) existing.parentNode.removeChild(existing);
+
+                    var fd = new FormData(importForm);
+                    fd.set('action', 'mfseo_do_import');
+
+                    fetch(<?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>, {
+                        method: 'POST',
+                        body: fd,
+                        credentials: 'same-origin'
+                    })
+                    .then(function (r) { return r.text(); })
+                    .then(function (text) {
+                        var start = text.indexOf('{"success"');
+                        if (start === -1) start = text.indexOf('{"error"');
+                        try {
+                            return JSON.parse(start >= 0 ? text.slice(start) : text);
+                        } catch (_) {
+                            throw new Error('Unexpected response: ' + text.slice(0, 300));
+                        }
+                    })
+                    .then(function (resp) {
+                        importBtn.disabled = false;
+                        importBtn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>;
+
+                        if (resp.success) {
+                            var d = resp.data;
+                            var batchUrl = <?php echo wp_json_encode( admin_url( 'admin.php?page=mindfulseo-batch-optimize' ) ); ?>;
+                            var postsUrl = <?php echo wp_json_encode( admin_url( 'edit.php' ) ); ?>;
+                            showImportFeedback(
+                                '<p style="margin:0 0 10px;font-size:14px;"><strong><?php echo esc_js( __( 'Import finished successfully.', 'mindfulseo' ) ); ?></strong></p>' +
+                                '<p style="margin:0 0 12px;"><?php echo esc_js( __( 'Updated:', 'mindfulseo' ) ); ?> ' + d.u + ' &middot; <?php echo esc_js( __( 'Created:', 'mindfulseo' ) ); ?> ' + d.c + ' &middot; <?php echo esc_js( __( 'Skipped:', 'mindfulseo' ) ); ?> ' + d.s + '</p>' +
+                                '<p style="margin:0;"><a href="' + batchUrl + '" class="button button-primary"><?php echo esc_js( __( 'Open Batch Optimizer', 'mindfulseo' ) ); ?></a> ' +
+                                '<a href="' + postsUrl + '" class="button"><?php echo esc_js( __( 'All posts', 'mindfulseo' ) ); ?></a></p>',
+                                true
+                            );
+                        } else {
+                            var code = typeof resp.data === 'string' ? resp.data : 'unknown';
+                            var msg  = importErrorMessages[code] || ('Import failed (' + code + ').');
+                            showImportFeedback(
+                                '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Import could not complete.', 'mindfulseo' ) ); ?></strong></p>' +
+                                '<p style="margin:8px 0 0;">' + msg + '</p>',
+                                false
+                            );
+                        }
+                    })
+                    .catch(function (err) {
+                        importBtn.disabled = false;
+                        importBtn.value = <?php echo wp_json_encode( __( 'Run Import', 'mindfulseo' ) ); ?>;
+                        showImportFeedback(
+                            '<p style="margin:0;font-size:14px;"><strong><?php echo esc_js( __( 'Import could not complete.', 'mindfulseo' ) ); ?></strong></p>' +
+                            '<p style="margin:8px 0 0;">' + err.message + '</p>',
+                            false
+                        );
+                    });
+                });
+            }
         })();
         </script>
         <?php
     }
 
     // =========================================================
-    // IMPORT HANDLER  (admin-post.php → admin_post_mfseo_import_posts)
+    // IMPORT
     // =========================================================
 
+    /**
+     * Run import during admin_init when the Import form POSTs to admin.php?page=….
+     *
+     * Feedback is read later in render_page() from self::$import_feedback_for_current_request.
+     */
+    public static function maybe_handle_import_on_admin_init() {
+        if ( ! is_admin() || wp_doing_ajax() ) {
+            return;
+        }
+        if ( empty( $_POST['mfseo_ie_process_import'] ) ) {
+            return;
+        }
+        $approved_pages = array( 'mindfulseo-import-export' );
+        $page           = isset( $_GET['page'] ) ? sanitize_text_field( wp_unslash( $_GET['page'] ) ) : '';
+        if ( ! in_array( $page, $approved_pages, true ) ) {
+            return;
+        }
+        self::$import_feedback_for_current_request = self::run_import_upload();
+    }
+
+    /**
+     * Legacy: admin-post.php → redirect back with user-meta flash.
+     */
     public static function handle_import() {
+        self::redirect_import_page_with_feedback( self::run_import_upload() );
+    }
+
+    /**
+     * @param bool $nonce_already_verified Set true when the caller has already called
+     *                                      check_ajax_referer()/check_admin_referer().
+     * @return array{success:bool,u?:int,c?:int,s?:int,code?:string}
+     */
+    private static function run_import_upload( bool $nonce_already_verified = false ) {
         if ( ! current_user_can( 'manage_options' ) ) {
-            wp_safe_redirect( self::ie_redirect( 'no_permission' ) );
-            exit;
+            return array( 'success' => false, 'code' => 'no_permission' );
         }
 
-        if ( ! check_admin_referer( self::NONCE_IMPORT, 'mfseo_import_nonce' ) ) {
-            wp_safe_redirect( self::ie_redirect( 'bad_nonce' ) );
-            exit;
+        if ( ! $nonce_already_verified ) {
+            check_admin_referer( self::NONCE_IMPORT, 'mfseo_import_nonce' );
         }
 
         if ( empty( $_FILES['import_zip']['tmp_name'] ) ) {
-            wp_safe_redirect( self::ie_redirect( 'no_file' ) );
-            exit;
+            return array( 'success' => false, 'code' => 'no_file' );
         }
         $file = $_FILES['import_zip'];
         if ( ! empty( $file['error'] ) ) {
-            wp_safe_redirect( self::ie_redirect( 'upload_err' ) );
-            exit;
+            return array( 'success' => false, 'code' => 'upload_err' );
         }
 
         if ( ! class_exists( 'ZipArchive' ) ) {
-            wp_die( esc_html__( 'PHP ZipArchive extension is required for import.', 'mindfulseo' ) );
+            return array( 'success' => false, 'code' => 'no_zip' );
         }
 
         $mode = sanitize_key( wp_unslash( $_POST['import_record_mode'] ?? 'upsert' ) );
@@ -693,16 +877,14 @@ class MFSEO_Post_Import_Export {
 
         $persisted = wp_tempnam( 'mfseo-import' );
         if ( ! is_string( $persisted ) || ! @move_uploaded_file( $file['tmp_name'], $persisted ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
-            wp_safe_redirect( self::ie_redirect( 'move_failed' ) );
-            exit;
+            return array( 'success' => false, 'code' => 'move_failed' );
         }
 
         $zip = new ZipArchive();
         if ( $zip->open( $persisted ) !== true ) {
             // phpcs:ignore WordPress.PHP.NoSilencedErrors
             @unlink( $persisted );
-            wp_safe_redirect( self::ie_redirect( 'zip_open' ) );
-            exit;
+            return array( 'success' => false, 'code' => 'zip_open' );
         }
 
         $manifest_idx = $zip->locateName( 'manifest.csv' );
@@ -710,8 +892,7 @@ class MFSEO_Post_Import_Export {
             $zip->close();
             // phpcs:ignore WordPress.PHP.NoSilencedErrors
             @unlink( $persisted );
-            wp_safe_redirect( self::ie_redirect( 'no_manifest' ) );
-            exit;
+            return array( 'success' => false, 'code' => 'no_manifest' );
         }
 
         $fh = fopen( 'php://memory', 'r+' );
@@ -724,8 +905,7 @@ class MFSEO_Post_Import_Export {
             $zip->close();
             // phpcs:ignore WordPress.PHP.NoSilencedErrors
             @unlink( $persisted );
-            wp_safe_redirect( self::ie_redirect( 'bad_csv' ) );
-            exit;
+            return array( 'success' => false, 'code' => 'bad_csv' );
         }
 
         $col  = array_flip( $header );
@@ -793,8 +973,12 @@ class MFSEO_Post_Import_Export {
         // phpcs:ignore WordPress.PHP.NoSilencedErrors
         @unlink( $persisted );
 
-        wp_safe_redirect( self::import_done_redirect_url( $updated, $created, $skipped ) );
-        exit;
+        return array(
+            'success' => true,
+            'u'       => $updated,
+            'c'       => $created,
+            's'       => $skipped,
+        );
     }
 
     // =========================================================
@@ -1124,36 +1308,44 @@ class MFSEO_Post_Import_Export {
     // PRIVATE HELPERS
     // =========================================================
 
-    private static function ie_redirect( $code ) {
-        $url = add_query_arg(
-            array( 'page' => 'mindfulseo-import-export', 'import' => $code ),
-            admin_url( 'admin.php' )
-        );
-
-        return $url . '#mfseo-import-section';
+    /**
+     * User meta key for one-shot import feedback (survives redirect URL stripping and object cache).
+     *
+     * @return string
+     */
+    private static function import_feedback_meta_key() {
+        return '_mfseo_import_feedback_flash';
     }
 
     /**
-     * Redirect URL after a successful import (fragment scrolls to the feedback banner).
-     *
-     * @param int $updated Updated count.
-     * @param int $created Created count.
-     * @param int $skipped Skipped count.
-     * @return string
+     * @return array<string,mixed>|null Payload or null.
      */
-    private static function import_done_redirect_url( $updated, $created, $skipped ) {
-        $url = add_query_arg(
-            array(
-                'page'   => 'mindfulseo-import-export',
-                'import' => 'done',
-                'u'      => (int) $updated,
-                'c'      => (int) $created,
-                's'      => (int) $skipped,
-            ),
-            admin_url( 'admin.php' )
-        );
+    private static function take_import_feedback() {
+        $uid = (int) get_current_user_id();
+        if ( $uid < 1 ) {
+            return null;
+        }
+        $raw = get_user_meta( $uid, self::import_feedback_meta_key(), true );
+        if ( ! is_array( $raw ) ) {
+            return null;
+        }
+        delete_user_meta( $uid, self::import_feedback_meta_key() );
+        return $raw;
+    }
 
-        return $url . '#mfseo-import-section';
+    /**
+     * Store feedback and redirect to the Import / Export screen (no fragile query args).
+     *
+     * @param array $data { success: bool, u?: int, c?: int, s?: int, code?: string }
+     */
+    private static function redirect_import_page_with_feedback( array $data ) {
+        $uid = (int) get_current_user_id();
+        if ( $uid > 0 ) {
+            update_user_meta( $uid, self::import_feedback_meta_key(), $data );
+        }
+        $base = admin_url( 'admin.php?page=mindfulseo-import-export' );
+        wp_safe_redirect( $base . '#mfseo-import-section' );
+        exit;
     }
 
     /**
