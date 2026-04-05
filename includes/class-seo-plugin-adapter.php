@@ -14,10 +14,18 @@ if (!defined('ABSPATH')) {
 }
 
 class MFSEO_SEO_Plugin_Adapter {
-    
+
+    /**
+     * Portable post meta written on import / when no Yoast or Rank Math is active.
+     * Also used as a fallback when reading so Batch Optimizer shows imported SEO.
+     */
+    const META_PORTABLE_FOCUS       = '_mindfulseo_focus_keyword';
+    const META_PORTABLE_TITLE       = '_mindfulseo_seo_title';
+    const META_PORTABLE_DESCRIPTION = '_mindfulseo_meta_description';
+
     /**
      * The single instance of the class
-     * 
+     *
      * @var MFSEO_SEO_Plugin_Adapter
      */
     private static $instance = null;
@@ -93,22 +101,27 @@ class MFSEO_SEO_Plugin_Adapter {
      * @return bool Success
      */
     public function set_focus_keyword($post_id, $keyword) {
-        if (!$this->is_seo_plugin_active()) {
-            return false;
+        $keyword = sanitize_text_field((string) $keyword);
+        $plugin_ok = false;
+
+        if ($this->is_seo_plugin_active()) {
+            switch ($this->active_plugin) {
+                case 'rankmath':
+                    $plugin_ok = update_post_meta($post_id, 'rank_math_focus_keyword', $keyword) !== false;
+                    break;
+                case 'yoast':
+                    $plugin_ok = update_post_meta($post_id, '_yoast_wpseo_focuskw', $keyword) !== false;
+                    break;
+            }
         }
-        
-        $keyword = sanitize_text_field($keyword);
-        
-        switch ($this->active_plugin) {
-            case 'rankmath':
-                return update_post_meta($post_id, 'rank_math_focus_keyword', $keyword);
-                
-            case 'yoast':
-                return update_post_meta($post_id, '_yoast_wpseo_focuskw', $keyword);
-                
-            default:
-                return false;
+
+        if ($keyword !== '') {
+            update_post_meta($post_id, self::META_PORTABLE_FOCUS, $keyword);
+        } else {
+            delete_post_meta($post_id, self::META_PORTABLE_FOCUS);
         }
+
+        return $plugin_ok || $keyword !== '';
     }
     
     /**
@@ -119,22 +132,27 @@ class MFSEO_SEO_Plugin_Adapter {
      * @return bool Success
      */
     public function set_seo_title($post_id, $title) {
-        if (!$this->is_seo_plugin_active()) {
-            return false;
+        $title     = sanitize_text_field((string) $title);
+        $plugin_ok = false;
+
+        if ($this->is_seo_plugin_active()) {
+            switch ($this->active_plugin) {
+                case 'rankmath':
+                    $plugin_ok = update_post_meta($post_id, 'rank_math_title', $title) !== false;
+                    break;
+                case 'yoast':
+                    $plugin_ok = update_post_meta($post_id, '_yoast_wpseo_title', $title) !== false;
+                    break;
+            }
         }
-        
-        $title = sanitize_text_field($title);
-        
-        switch ($this->active_plugin) {
-            case 'rankmath':
-                return update_post_meta($post_id, 'rank_math_title', $title);
-                
-            case 'yoast':
-                return update_post_meta($post_id, '_yoast_wpseo_title', $title);
-                
-            default:
-                return false;
+
+        if ($title !== '') {
+            update_post_meta($post_id, self::META_PORTABLE_TITLE, $title);
+        } else {
+            delete_post_meta($post_id, self::META_PORTABLE_TITLE);
         }
+
+        return $plugin_ok || $title !== '';
     }
     
     /**
@@ -145,22 +163,27 @@ class MFSEO_SEO_Plugin_Adapter {
      * @return bool Success
      */
     public function set_meta_description($post_id, $description) {
-        if (!$this->is_seo_plugin_active()) {
-            return false;
+        $description = sanitize_textarea_field((string) $description);
+        $plugin_ok     = false;
+
+        if ($this->is_seo_plugin_active()) {
+            switch ($this->active_plugin) {
+                case 'rankmath':
+                    $plugin_ok = update_post_meta($post_id, 'rank_math_description', $description) !== false;
+                    break;
+                case 'yoast':
+                    $plugin_ok = update_post_meta($post_id, '_yoast_wpseo_metadesc', $description) !== false;
+                    break;
+            }
         }
-        
-        $description = sanitize_textarea_field($description);
-        
-        switch ($this->active_plugin) {
-            case 'rankmath':
-                return update_post_meta($post_id, 'rank_math_description', $description);
-                
-            case 'yoast':
-                return update_post_meta($post_id, '_yoast_wpseo_metadesc', $description);
-                
-            default:
-                return false;
+
+        if ($description !== '') {
+            update_post_meta($post_id, self::META_PORTABLE_DESCRIPTION, $description);
+        } else {
+            delete_post_meta($post_id, self::META_PORTABLE_DESCRIPTION);
         }
+
+        return $plugin_ok || $description !== '';
     }
     
     /**
@@ -170,20 +193,12 @@ class MFSEO_SEO_Plugin_Adapter {
      * @return string|null Current keyword
      */
     public function get_focus_keyword($post_id) {
-        if (!$this->is_seo_plugin_active()) {
-            return null;
-        }
-        
-        switch ($this->active_plugin) {
-            case 'rankmath':
-                return get_post_meta($post_id, 'rank_math_focus_keyword', true);
-                
-            case 'yoast':
-                return get_post_meta($post_id, '_yoast_wpseo_focuskw', true);
-                
-            default:
-                return null;
-        }
+        return $this->resolve_seo_string(
+            $post_id,
+            'rank_math_focus_keyword',
+            '_yoast_wpseo_focuskw',
+            self::META_PORTABLE_FOCUS
+        );
     }
     
     /**
@@ -193,20 +208,12 @@ class MFSEO_SEO_Plugin_Adapter {
      * @return string|null Current title
      */
     public function get_seo_title($post_id) {
-        if (!$this->is_seo_plugin_active()) {
-            return null;
-        }
-        
-        switch ($this->active_plugin) {
-            case 'rankmath':
-                return get_post_meta($post_id, 'rank_math_title', true);
-                
-            case 'yoast':
-                return get_post_meta($post_id, '_yoast_wpseo_title', true);
-                
-            default:
-                return null;
-        }
+        return $this->resolve_seo_string(
+            $post_id,
+            'rank_math_title',
+            '_yoast_wpseo_title',
+            self::META_PORTABLE_TITLE
+        );
     }
     
     /**
@@ -216,20 +223,56 @@ class MFSEO_SEO_Plugin_Adapter {
      * @return string|null Current description
      */
     public function get_meta_description($post_id) {
-        if (!$this->is_seo_plugin_active()) {
+        return $this->resolve_seo_string(
+            $post_id,
+            'rank_math_description',
+            '_yoast_wpseo_metadesc',
+            self::META_PORTABLE_DESCRIPTION
+        );
+    }
+
+    /**
+     * Read SEO text: active plugin key first, then portable, then the other vendor key.
+     * Lets Batch Optimizer show SEO after import on sites with no SEO plugin, or when only raw meta exists.
+     *
+     * @param int    $post_id       Post ID.
+     * @param string $rank_math_key Rank Math meta key.
+     * @param string $yoast_key     Yoast meta key.
+     * @param string $portable_key  MindfulSEO portable meta key.
+     * @return string|null
+     */
+    private function resolve_seo_string($post_id, $rank_math_key, $yoast_key, $portable_key) {
+        $post_id = (int) $post_id;
+        if ($post_id < 1) {
             return null;
         }
-        
-        switch ($this->active_plugin) {
-            case 'rankmath':
-                return get_post_meta($post_id, 'rank_math_description', true);
-                
-            case 'yoast':
-                return get_post_meta($post_id, '_yoast_wpseo_metadesc', true);
-                
-            default:
-                return null;
+
+        $try = function ($key) use ($post_id) {
+            $raw = get_post_meta($post_id, $key, true);
+            if (is_array($raw)) {
+                $raw = '';
+            }
+            $s = trim((string) $raw);
+
+            return $s !== '' ? $s : null;
+        };
+
+        if ($this->is_seo_plugin_active()) {
+            $primary = ($this->active_plugin === 'rankmath') ? $rank_math_key : $yoast_key;
+            $found   = $try($primary);
+            if ($found !== null) {
+                return $found;
+            }
         }
+
+        foreach (array($portable_key, $rank_math_key, $yoast_key) as $key) {
+            $found = $try($key);
+            if ($found !== null) {
+                return $found;
+            }
+        }
+
+        return null;
     }
     
     /**

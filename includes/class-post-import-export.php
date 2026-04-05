@@ -1064,7 +1064,10 @@ class MFSEO_Post_Import_Export {
             }
         }
 
-        if ( $do_seo && $seo_nonempty && $adapter && $adapter->is_seo_plugin_active() ) {
+        // Always persist SEO from the manifest when requested — adapter writes RankMath/Yoast
+        // meta when those plugins are active, and portable _mindfulseo_* meta either way
+        // so Batch Optimizer works on sites without an SEO plugin.
+        if ( $do_seo && $seo_nonempty && $adapter ) {
             $adapter->set_all_seo_meta( $post_id, $seo_data );
             $row_changed = true;
         }
