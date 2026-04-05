@@ -86,6 +86,9 @@ class MFSEO_Batch_Optimizer_Page {
 
         foreach ($posts as $post) {
             $focus_keyword = trim((string) $adapter->get_focus_keyword($post->ID));
+            if ($focus_keyword === '' && ! empty($post->opt_primary_keyword)) {
+                $focus_keyword = trim((string) $post->opt_primary_keyword);
+            }
             $post_keywords[$post->ID] = $focus_keyword;
 
             if ($focus_keyword !== '') {
@@ -378,8 +381,17 @@ class MFSEO_Batch_Optimizer_Page {
                                 $current_keyword = $raw_keyword !== '' ? $raw_keyword : '—';
                                 $metrics_key = strtolower($raw_keyword);
                                 $metrics = ($raw_keyword !== '' && isset($keyword_metrics[$metrics_key])) ? $keyword_metrics[$metrics_key] : null;
-                                $seo_title = $adapter->get_seo_title($post->ID) ?: '—';
-                                $meta_desc = $adapter->get_meta_description($post->ID) ?: '—';
+                                $seo_title = $adapter->get_seo_title($post->ID);
+                                if ($seo_title === null || $seo_title === '') {
+                                    $seo_title = ! empty($post->opt_seo_title) ? (string) $post->opt_seo_title : null;
+                                }
+                                $seo_title = $seo_title ?: '—';
+
+                                $meta_desc = $adapter->get_meta_description($post->ID);
+                                if ($meta_desc === null || $meta_desc === '') {
+                                    $meta_desc = ! empty($post->opt_meta_description) ? (string) $post->opt_meta_description : null;
+                                }
+                                $meta_desc = $meta_desc ?: '—';
                                 $slug = $post->post_name ?: '—';
 
                                 $search_volume_display = '—';
@@ -740,10 +752,13 @@ class MFSEO_Batch_Optimizer_Page {
                 p.post_status,
                 p.post_modified,
                 o.status as opt_status,
-                o.optimization_date as opt_date
+                o.optimization_date as opt_date,
+                o.primary_keyword as opt_primary_keyword,
+                o.seo_title as opt_seo_title,
+                o.meta_description as opt_meta_description
             FROM {$wpdb->posts} p
             LEFT JOIN (
-                SELECT post_id, status, optimization_date
+                SELECT post_id, status, optimization_date, primary_keyword, seo_title, meta_description
                 FROM $opts_table o1
                 WHERE id = (
                     SELECT MAX(id)

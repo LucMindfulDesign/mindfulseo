@@ -875,8 +875,7 @@ class MFSEO_Post_Import_Export {
             $html = ( $z !== false ) ? $z : '';
         }
 
-        $seo_data     = array();
-        $seo_nonempty = false;
+        $seo_data = array();
         if ( $do_seo ) {
             $map = array(
                 'focus_keyword'    => 'keyword',
@@ -889,9 +888,6 @@ class MFSEO_Post_Import_Export {
                     $seo_data[ $seo_key ] = ( $col_key === 'meta_description' )
                         ? sanitize_textarea_field( $raw )
                         : sanitize_text_field( $raw );
-                    if ( $seo_data[ $seo_key ] !== '' ) {
-                        $seo_nonempty = true;
-                    }
                 }
             }
         }
@@ -1046,6 +1042,7 @@ class MFSEO_Post_Import_Export {
             }
         }
 
+        $mfseo_rows_for_seo = null;
         if ( $do_mfseo && isset( $col['mfseo_file'] ) ) {
             $mf = trim( (string) $data[ $col['mfseo_file'] ] );
             if ( $mf !== '' ) {
@@ -1058,16 +1055,30 @@ class MFSEO_Post_Import_Export {
                     $opt_rows = json_decode( $raw, true );
                     if ( is_array( $opt_rows ) ) {
                         self::import_mfseo_records( $post_id, $opt_rows );
+                        $mfseo_rows_for_seo = $opt_rows;
                         $row_changed = true;
                     }
                 }
             }
         }
 
-        // Always persist SEO from the manifest when requested — adapter writes RankMath/Yoast
-        // meta when those plugins are active, and portable _mindfulseo_* meta either way
-        // so Batch Optimizer works on sites without an SEO plugin.
-        if ( $do_seo && $seo_nonempty && $adapter ) {
+        /*
+         * SEO in the manifest often comes from Rank Math / Yoast post meta. Many sites only
+         * store keyword/title/description inside MindfulSEO optimization rows until "Apply"
+         * is run — so CSV columns can be empty while mfseo/*.json has the real data.
+         * Merge optimization rows into $seo_data, then persist via adapter (portable + plugin).
+         */
+        if ( $do_seo && $adapter && is_array( $mfseo_rows_for_seo ) && ! empty( $mfseo_rows_for_seo ) ) {
+            $seo_data = self::merge_seo_data_from_mfseo_rows( $seo_data, $mfseo_rows_for_seo );
+        }
+
+        $seo_nonempty = $do_seo && (
+            ( isset( $seo_data['keyword'] ) && $seo_data['keyword'] !== '' )
+            || ( isset( $seo_data['title'] ) && $seo_data['title'] !== '' )
+            || ( isset( $seo_data['description'] ) && $seo_data['description'] !== '' )
+        );
+
+        if ( $seo_nonempty && $adapter ) {
             $adapter->set_all_seo_meta( $post_id, $seo_data );
             $row_changed = true;
         }
@@ -1087,6 +1098,42 @@ class MFSEO_Post_Import_Export {
             array( 'page' => 'mindfulseo-import-export', 'import' => $code ),
             admin_url( 'admin.php' )
         );
+    }
+
+    /**
+     * Fill empty SEO fields from MindfulSEO optimization export rows (mfseo/{id}.json).
+     * Rows are ordered newest-first in export; first non-empty value wins per field.
+     *
+     * @param array $seo_data Existing keyword/title/description from manifest.csv.
+     * @param array $rows     List of DB-style optimization rows.
+     * @return array{keyword?:string,title?:string,description?:string}
+     */
+    private static function merge_seo_data_from_mfseo_rows( array $seo_data, array $rows ) {
+        $out = array(
+            'keyword'     => isset( $seo_data['keyword'] ) ? (string) $seo_data['keyword'] : '',
+            'title'       => isset( $seo_data['title'] ) ? (string) $seo_data['title'] : '',
+            'description' => isset( $seo_data['description'] ) ? (string) $seo_data['description'] : '',
+        );
+
+        foreach ( $rows as $row ) {
+            if ( ! is_array( $row ) ) {
+                continue;
+            }
+            if ( $out['keyword'] === '' && ! empty( $row['primary_keyword'] ) ) {
+                $out['keyword'] = sanitize_text_field( (string) $row['primary_keyword'] );
+            }
+            if ( $out['title'] === '' && ! empty( $row['seo_title'] ) ) {
+                $out['title'] = sanitize_text_field( (string) $row['seo_title'] );
+            }
+            if ( $out['description'] === '' && ! empty( $row['meta_description'] ) ) {
+                $out['description'] = sanitize_textarea_field( (string) $row['meta_description'] );
+            }
+            if ( $out['keyword'] !== '' && $out['title'] !== '' && $out['description'] !== '' ) {
+                break;
+            }
+        }
+
+        return $out;
     }
 
 
