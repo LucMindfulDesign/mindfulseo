@@ -522,7 +522,7 @@ class MFSEO_Post_Import_Export {
                     $batch_url = admin_url( 'admin.php?page=mindfulseo-batch-optimize' );
                     $posts_url = admin_url( 'edit.php' );
                     ?>
-                    <div id="mfseo-import-feedback" class="notice notice-success" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;" role="status">
+                    <div id="mfseo-import-feedback" class="mfseo-import-result mfseo-import-result-success" style="margin:0 0 18px;padding:12px 14px;border-left:4px solid #00a32a;background:#f0f8f1;border-radius:2px;" role="status">
                         <p style="margin:0 0 10px;font-size:14px;">
                             <strong><?php esc_html_e( 'Import finished successfully.', 'mindfulseo' ); ?></strong>
                         </p>
@@ -544,13 +544,13 @@ class MFSEO_Post_Import_Export {
                     </div>
 
                 <?php elseif ( $import_status !== '' && isset( $error_messages[ $import_status ] ) ) : ?>
-                    <div id="mfseo-import-feedback" class="notice notice-error" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;" role="alert">
+                    <div id="mfseo-import-feedback" class="mfseo-import-result mfseo-import-result-error" style="margin:0 0 18px;padding:12px 14px;border-left:4px solid #d63638;background:#fcf0f1;border-radius:2px;" role="alert">
                         <p style="margin:0;font-size:14px;"><strong><?php esc_html_e( 'Import could not complete.', 'mindfulseo' ); ?></strong></p>
                         <p style="margin:8px 0 0;"><?php echo esc_html( $error_messages[ $import_status ] ); ?></p>
                     </div>
 
                 <?php elseif ( $import_status !== '' ) : ?>
-                    <div id="mfseo-import-feedback" class="notice notice-error" style="margin:0 0 18px;padding:12px 14px;border-left-width:4px;" role="alert">
+                    <div id="mfseo-import-feedback" class="mfseo-import-result mfseo-import-result-error" style="margin:0 0 18px;padding:12px 14px;border-left:4px solid #d63638;background:#fcf0f1;border-radius:2px;" role="alert">
                         <p style="margin:0;font-size:14px;"><strong><?php esc_html_e( 'Import could not complete.', 'mindfulseo' ); ?></strong></p>
                         <p style="margin:8px 0 0;"><?php esc_html_e( 'Check the PHP error log for details.', 'mindfulseo' ); ?></p>
                     </div>
@@ -720,9 +720,12 @@ class MFSEO_Post_Import_Export {
                 if (old) { old.parentNode.removeChild(old); }
                 var d = document.createElement('div');
                 d.id = 'mfseo-import-feedback';
-                d.className = 'notice ' + (ok ? 'notice-success' : 'notice-error');
+                /* Use a custom class — NOT .notice — so admin.js moveNoticesToTop() never touches this div */
+                d.className = 'mfseo-import-result mfseo-import-result-' + (ok ? 'success' : 'error');
                 d.setAttribute('role', ok ? 'status' : 'alert');
-                d.style.cssText = 'margin:0 0 18px;padding:12px 14px;border-left-width:4px;';
+                d.style.cssText = 'margin:0 0 18px;padding:12px 14px;border-left:4px solid ' +
+                    (ok ? '#00a32a' : '#d63638') + ';background:' + (ok ? '#f0f8f1' : '#fcf0f1') +
+                    ';border-radius:2px;';
                 d.innerHTML = html;
                 if (form && form.parentNode) {
                     form.parentNode.insertBefore(d, form);
@@ -731,8 +734,8 @@ class MFSEO_Post_Import_Export {
                 } else {
                     document.body.appendChild(d);
                 }
-                var target = sec || d;
-                setTimeout(function () { target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 80);
+                /* Scroll directly to the feedback div, not to the whole section */
+                setTimeout(function () { d.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 80);
             }
 
             if (!fileInput || !fileInput.files || !fileInput.files.length) {
