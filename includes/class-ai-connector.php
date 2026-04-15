@@ -317,7 +317,15 @@ class MFSEO_AI_Connector {
                     if (!is_wp_error($or_result)) {
                         return $or_result;
                     }
-                    set_transient($or_breaker, 1, 5 * MINUTE_IN_SECONDS);
+                    // Do not trip breaker on transient timeouts/network — keeps batch jobs on OpenRouter after slow responses.
+                    $trip = true;
+                    $msg  = strtolower($or_result->get_error_message());
+                    if ($or_result->get_error_code() === 'http_request_failed' || strpos($msg, 'timed out') !== false || strpos($msg, 'timeout') !== false) {
+                        $trip = false;
+                    }
+                    if ($trip) {
+                        set_transient($or_breaker, 1, 5 * MINUTE_IN_SECONDS);
+                    }
                 }
             }
         }
@@ -531,6 +539,12 @@ class MFSEO_AI_Connector {
         $api_key = isset($settings['openrouter_api_key']) ? $this->decrypt_api_key($settings['openrouter_api_key']) : '';
         if (empty($api_key)) {
             return new WP_Error('no_api_key', 'OpenRouter API key not configured');
+        }
+
+        $usage_ctx = isset($options['usage_context']) ? (string) $options['usage_context'] : '';
+        // Batch optimizer sends large JSON-shaping prompts; fast models are often :free (severe queueing) — use main OpenRouter model.
+        if ($use_fast && $usage_ctx === 'batch_optimizer') {
+            $use_fast = false;
         }
 
         if ($use_fast) {

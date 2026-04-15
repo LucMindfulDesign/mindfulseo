@@ -601,12 +601,11 @@ class MFSEO_Admin_Page {
         
         $settings = MindfulSEO::get_settings();
         $active_tab = isset($_GET['tab']) && $_GET['tab'] === 'usage' ? 'usage' : 'settings';
-        $mfseo_settings_main_ai = (! empty($settings['ai_backend']) && $settings['ai_backend'] === 'openrouter')
-            ? 'openrouter'
-            : (in_array(isset($settings['primary_provider']) ? $settings['primary_provider'] : '', array('openai', 'claude'), true)
-                ? $settings['primary_provider']
-                : 'openai');
-        
+        $pp_direct = isset($settings['primary_provider']) && in_array($settings['primary_provider'], array('openai', 'claude'), true)
+            ? $settings['primary_provider']
+            : 'openai';
+        $ai_is_openrouter = ! empty($settings['ai_backend']) && $settings['ai_backend'] === 'openrouter';
+
         ?>
         <!-- Output WordPress notices OUTSIDE and BEFORE the wrap div -->
         <?php settings_errors(); ?>
@@ -737,8 +736,25 @@ class MFSEO_Admin_Page {
                                         <?php _e('OpenRouter (many models, one key)', 'mindfulseo'); ?>
                                     </option>
                                 </select>
-                                <p class="description mfseo-backend-desc-direct"><?php _e('Connect using your OpenAI and Claude API keys. Choose which provider is primary below.', 'mindfulseo'); ?></p>
+                                <p class="description mfseo-backend-desc-direct"><?php _e('Connect using your OpenAI and Claude API keys. Pick which API to try first in the next row, then enter keys below.', 'mindfulseo'); ?></p>
                                 <p class="description mfseo-backend-desc-or" style="display:none;"><?php _e('Traffic goes to OpenRouter first (Qwen, MiniMax, etc.). Optional OpenAI and Claude keys below are only used if OpenRouter fails and fallback is enabled—expand the section to configure them.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-direct-primary-row"<?php echo $ai_is_openrouter ? ' style="display:none;"' : ''; ?>>
+                            <th scope="row">
+                                <label for="primary_provider"><?php _e('Primary provider', 'mindfulseo'); ?></label>
+                            </th>
+                            <td>
+                                <select id="primary_provider" name="primary_provider"<?php echo $ai_is_openrouter ? ' disabled' : ''; ?>>
+                                    <option value="openai" <?php selected($pp_direct, 'openai'); ?>>
+                                        <?php esc_html_e('OpenAI — try first', 'mindfulseo'); ?>
+                                    </option>
+                                    <option value="claude" <?php selected($pp_direct, 'claude'); ?>>
+                                        <?php esc_html_e('Claude — try first', 'mindfulseo'); ?>
+                                    </option>
+                                </select>
+                                <p class="description"><?php esc_html_e('Direct mode only. OpenRouter uses Main / Fast models above. Here, pick whether OpenAI or Claude is tried first when not using OpenRouter.', 'mindfulseo'); ?></p>
                             </td>
                         </tr>
 
@@ -768,6 +784,91 @@ class MFSEO_Admin_Page {
                                        value="<?php echo esc_attr(isset($settings['openrouter_http_referer']) ? $settings['openrouter_http_referer'] : ''); ?>"
                                        placeholder="<?php echo esc_attr(home_url('/')); ?>">
                                 <p class="description"><?php _e('Optional. Defaults to this site URL for OpenRouter attribution.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only">
+                            <th scope="row" colspan="2">
+                                <h3 style="margin: 16px 0 6px 0; font-size: 14px; font-weight: 600;">
+                                    <?php _e('OpenRouter models', 'mindfulseo'); ?>
+                                </h3>
+                                <p class="description" style="margin: 0; font-weight: normal;">
+                                    <?php _e('These model IDs are sent to OpenRouter for AI features. Browse and copy any id from', 'mindfulseo'); ?>
+                                    <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a>.
+                                </p>
+                            </th>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
+                            <th scope="row"><label for="openrouter_model"><?php _e('Main model', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <?php
+                                $or_model_val = isset($settings['openrouter_model']) ? $settings['openrouter_model'] : 'qwen/qwen3.5-flash-02-23';
+                                $or_main_models = array(
+                                    'qwen/qwen3.5-flash-02-23'  => 'Qwen 3.5 Flash (fast, $0.065/1M)',
+                                    'qwen/qwen3.5-35b-a3b'      => 'Qwen 3.5 35B A3B ($0.16/1M)',
+                                    'qwen/qwen3-235b-a22b'      => 'Qwen3 235B (most capable)',
+                                    'qwen/qwen3-30b-a3b'        => 'Qwen3 30B A3B (balanced)',
+                                    'qwen/qwen3-8b'             => 'Qwen3 8B (lightweight)',
+                                    'minimax/minimax-m2.7'      => 'MiniMax M2.7 (latest)',
+                                    'minimax/minimax-m2.5'      => 'MiniMax M2.5',
+                                    'minimax/minimax-m2.5:free' => 'MiniMax M2.5 (free tier)',
+                                    'minimax/minimax-m2'        => 'MiniMax M2',
+                                    'meta-llama/llama-3.3-70b-instruct:free' => 'Llama 3.3 70B (free)',
+                                );
+                                ?>
+                                <select id="openrouter_model" name="openrouter_model">
+                                    <?php foreach ($or_main_models as $val => $label) : ?>
+                                        <option value="<?php echo esc_attr($val); ?>" <?php selected($or_model_val, $val); ?>><?php echo esc_html($label); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <p class="description"><?php _e('Default for batch optimizer, long prompts, and most features (unless you set a custom id below).', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
+                            <th scope="row"><label for="openrouter_model_fast"><?php _e('Fast model', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <?php
+                                $or_fast_val = isset($settings['openrouter_model_fast']) ? $settings['openrouter_model_fast'] : 'qwen/qwen3.5-flash-02-23';
+                                $or_fast_models = array(
+                                    'qwen/qwen3.5-flash-02-23'           => 'Qwen 3.5 Flash (fast, $0.065/1M)',
+                                    'qwen/qwen3-8b'                      => 'Qwen3 8B',
+                                    'minimax/minimax-m2.5'               => 'MiniMax M2.5',
+                                    'minimax/minimax-m2.5:free'          => 'MiniMax M2.5 (free tier)',
+                                    'minimax/minimax-m2'                 => 'MiniMax M2',
+                                    'meta-llama/llama-3.2-3b-instruct:free' => 'Llama 3.2 3B (free, very fast)',
+                                    'meta-llama/llama-3.3-70b-instruct:free' => 'Llama 3.3 70B (free)',
+                                    'google/gemma-3-4b-it:free'          => 'Gemma 3 4B (free, fastest)',
+                                );
+                                ?>
+                                <select id="openrouter_model_fast" name="openrouter_model_fast">
+                                    <?php foreach ($or_fast_models as $val => $label) : ?>
+                                        <option value="<?php echo esc_attr($val); ?>" <?php selected($or_fast_val, $val); ?>><?php echo esc_html($label); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <p class="description"><?php _e('Used for quick, low-cost calls where the plugin requests a “fast” model.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
+                            <th scope="row"><label for="openrouter_custom_model"><?php _e('Custom model id (optional)', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <input type="text" class="large-text" id="openrouter_custom_model" name="openrouter_custom_model"
+                                       value="<?php echo esc_attr(isset($settings['openrouter_custom_model']) ? $settings['openrouter_custom_model'] : ''); ?>"
+                                       placeholder="<?php esc_attr_e('e.g. anthropic/claude-3.5-sonnet', 'mindfulseo'); ?>">
+                                <p class="description"><?php _e('If set, overrides the main preset above for non-fast requests only.', 'mindfulseo'); ?></p>
+                            </td>
+                        </tr>
+
+                        <tr class="mfseo-openrouter-only mfseo-or-fallback-prefer">
+                            <th scope="row"><label for="mfseo_fallback_direct_priority"><?php _e('If OpenRouter fails, try first', 'mindfulseo'); ?></label></th>
+                            <td>
+                                <select id="mfseo_fallback_direct_priority" name="mfseo_fallback_direct_priority">
+                                    <option value="openai" <?php selected(isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai', 'openai'); ?>><?php esc_html_e('OpenAI', 'mindfulseo'); ?></option>
+                                    <option value="claude" <?php selected(isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai', 'claude'); ?>><?php esc_html_e('Claude', 'mindfulseo'); ?></option>
+                                </select>
+                                <p class="description"><?php _e('Requires the matching API key in the optional fallback section below.', 'mindfulseo'); ?></p>
                             </td>
                         </tr>
 
@@ -1036,73 +1137,6 @@ class MFSEO_Admin_Page {
                             </th>
                         </tr>
                         
-                        <tr>
-                            <th scope="row">
-                                <label for="primary_provider"><?php _e('Primary AI Provider', 'mindfulseo'); ?></label>
-                            </th>
-                            <td>
-                                <select id="primary_provider" name="primary_provider">
-                                    <option value="openai" <?php selected($mfseo_settings_main_ai, 'openai'); ?>>
-                                        <?php esc_html_e('OpenAI', 'mindfulseo'); ?>
-                                    </option>
-                                    <option value="claude" <?php selected($mfseo_settings_main_ai, 'claude'); ?>>
-                                        <?php esc_html_e('Claude', 'mindfulseo'); ?>
-                                    </option>
-                                    <option value="openrouter" <?php selected($mfseo_settings_main_ai, 'openrouter'); ?>>
-                                        <?php esc_html_e('OpenRouter', 'mindfulseo'); ?>
-                                    </option>
-                                </select>
-                                <p class="description mfseo-primary-desc-direct"><?php esc_html_e('Choose how AI requests run: OpenAI or Claude (direct vendor APIs), or OpenRouter (one key; pick models below).', 'mindfulseo'); ?></p>
-                                <p class="description mfseo-primary-desc-or" style="display:none;"><?php esc_html_e('OpenRouter is primary. If it fails, the direct option selected above (OpenAI vs Claude) is tried first—requires that key in the optional fallback section.', 'mindfulseo'); ?></p>
-                            </td>
-                        </tr>
-
-                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
-                            <th scope="row"><label for="openrouter_model"><?php _e('OpenRouter model', 'mindfulseo'); ?></label></th>
-                            <td>
-                                <select id="openrouter_model" name="openrouter_model">
-                                    <option value="qwen/qwen3.5-flash-02-23" <?php selected(isset($settings['openrouter_model']) ? $settings['openrouter_model'] : '', 'qwen/qwen3.5-flash-02-23'); ?>>Qwen 3.5 Flash</option>
-                                    <option value="qwen/qwen3.5-35b-a3b" <?php selected(isset($settings['openrouter_model']) ? $settings['openrouter_model'] : '', 'qwen/qwen3.5-35b-a3b'); ?>>Qwen 3.5 35B A3B</option>
-                                    <option value="minimax/minimax-m2.5" <?php selected(isset($settings['openrouter_model']) ? $settings['openrouter_model'] : '', 'minimax/minimax-m2.5'); ?>>MiniMax M2.5</option>
-                                    <option value="minimax/minimax-m2" <?php selected(isset($settings['openrouter_model']) ? $settings['openrouter_model'] : '', 'minimax/minimax-m2'); ?>>MiniMax M2</option>
-                                </select>
-                                <p class="description"><?php _e('Main model for full prompts (unless custom id is set).', 'mindfulseo'); ?></p>
-                            </td>
-                        </tr>
-
-                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
-                            <th scope="row"><label for="openrouter_model_fast"><?php _e('OpenRouter fast model', 'mindfulseo'); ?></label></th>
-                            <td>
-                                <select id="openrouter_model_fast" name="openrouter_model_fast">
-                                    <option value="qwen/qwen3.5-flash-02-23" <?php selected(isset($settings['openrouter_model_fast']) ? $settings['openrouter_model_fast'] : '', 'qwen/qwen3.5-flash-02-23'); ?>>Qwen 3.5 Flash</option>
-                                    <option value="minimax/minimax-m2.5" <?php selected(isset($settings['openrouter_model_fast']) ? $settings['openrouter_model_fast'] : '', 'minimax/minimax-m2.5'); ?>>MiniMax M2.5</option>
-                                    <option value="minimax/minimax-m2" <?php selected(isset($settings['openrouter_model_fast']) ? $settings['openrouter_model_fast'] : '', 'minimax/minimax-m2'); ?>>MiniMax M2</option>
-                                </select>
-                                <p class="description"><?php _e('Used for lighter / fast requests. Connection test uses this model.', 'mindfulseo'); ?></p>
-                            </td>
-                        </tr>
-
-                        <tr class="mfseo-openrouter-only mfseo-general-openrouter-models">
-                            <th scope="row"><label for="openrouter_custom_model"><?php _e('Custom model id', 'mindfulseo'); ?></label></th>
-                            <td>
-                                <input type="text" class="large-text" id="openrouter_custom_model" name="openrouter_custom_model"
-                                       value="<?php echo esc_attr(isset($settings['openrouter_custom_model']) ? $settings['openrouter_custom_model'] : ''); ?>"
-                                       placeholder="e.g. minimax/minimax-m2.7">
-                                <p class="description"><?php _e('If set, overrides the main preset for non-fast requests. Verify ids on openrouter.ai/models.', 'mindfulseo'); ?></p>
-                            </td>
-                        </tr>
-
-                        <tr class="mfseo-openrouter-only mfseo-or-fallback-prefer">
-                            <th scope="row"><label for="mfseo_fallback_direct_priority"><?php _e('If OpenRouter fails, try first', 'mindfulseo'); ?></label></th>
-                            <td>
-                                <select id="mfseo_fallback_direct_priority" name="mfseo_fallback_direct_priority">
-                                    <option value="openai" <?php selected(isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai', 'openai'); ?>><?php esc_html_e('OpenAI', 'mindfulseo'); ?></option>
-                                    <option value="claude" <?php selected(isset($settings['primary_provider']) ? $settings['primary_provider'] : 'openai', 'claude'); ?>><?php esc_html_e('Claude', 'mindfulseo'); ?></option>
-                                </select>
-                                <p class="description"><?php _e('Requires the matching API key in the optional fallback block under AI Provider Settings.', 'mindfulseo'); ?></p>
-                            </td>
-                        </tr>
-                    
                         <tr>
                             <th scope="row">
                                 <label for="enable_fallback"><?php _e('Enable Fallback', 'mindfulseo'); ?></label>
@@ -3330,25 +3364,22 @@ seo_friendly,,content marketing strategy,SEO target phrase</pre>
             }
         }
         
-        // Update other settings
-        $posted_main_ai = isset($_POST['primary_provider']) ? sanitize_text_field(wp_unslash($_POST['primary_provider'])) : '';
-        if ($posted_main_ai === 'openrouter') {
+        // Update other settings — ai_backend is authoritative: "AI connection" must not be overridden by stale primary_provider.
+        $ai_backend_post  = isset($_POST['ai_backend']) && $_POST['ai_backend'] === 'openrouter' ? 'openrouter' : 'direct';
+        $posted_primary   = isset($_POST['primary_provider']) ? sanitize_text_field(wp_unslash($_POST['primary_provider'])) : 'openai';
+        if ($posted_primary === 'openrouter') {
+            $ai_backend_post = 'openrouter';
+        }
+        if ($ai_backend_post === 'openrouter') {
             $settings['ai_backend'] = 'openrouter';
-            if (isset($_POST['mfseo_fallback_direct_priority'])) {
-                $fd = sanitize_text_field(wp_unslash($_POST['mfseo_fallback_direct_priority']));
-                if (in_array($fd, array('openai', 'claude'), true)) {
-                    $settings['primary_provider'] = $fd;
-                }
-            } elseif (empty($settings['primary_provider']) || ! in_array($settings['primary_provider'], array('openai', 'claude'), true)) {
-                $settings['primary_provider'] = 'openai';
-            }
-        } elseif ($posted_main_ai === 'openai' || $posted_main_ai === 'claude') {
-            $settings['ai_backend'] = 'direct';
-            $settings['primary_provider'] = $posted_main_ai;
+            $fb = isset($_POST['mfseo_fallback_direct_priority']) ? sanitize_text_field(wp_unslash($_POST['mfseo_fallback_direct_priority'])) : 'openai';
+            $settings['primary_provider'] = in_array($fb, array('openai', 'claude'), true) ? $fb : 'openai';
         } else {
-            $settings['ai_backend'] = isset($_POST['ai_backend']) && $_POST['ai_backend'] === 'openrouter' ? 'openrouter' : 'direct';
-            $fallback_pp = isset($_POST['primary_provider']) ? sanitize_text_field(wp_unslash($_POST['primary_provider'])) : 'openai';
-            $settings['primary_provider'] = in_array($fallback_pp, array('openai', 'claude'), true) ? $fallback_pp : 'openai';
+            $settings['ai_backend'] = 'direct';
+            if ($posted_primary === 'openrouter') {
+                $posted_primary = 'openai';
+            }
+            $settings['primary_provider'] = in_array($posted_primary, array('openai', 'claude'), true) ? $posted_primary : 'openai';
         }
         /* Direct mode: connector keys off primary_provider; keep ai_provider identical for wizard + Settings consistency. */
         if ( isset( $settings['ai_backend'] ) && $settings['ai_backend'] === 'direct'

@@ -69,21 +69,52 @@ class MFSEO_OpenAI_Provider {
      */
     public static function estimate_openrouter_usd( $model, $input_tokens, $output_tokens ) {
         $model_l = strtolower( (string) $model );
-        $in_rate  = 0.0005;
-        $out_rate = 0.002;
-        if ( strpos( $model_l, 'qwen' ) !== false ) {
-            $in_rate = 0.0002;
-            $out_rate = 0.0008;
-        } elseif ( strpos( $model_l, 'minimax' ) !== false ) {
-            $in_rate = 0.0004;
-            $out_rate = 0.0016;
+
+        // Free-tier models — zero cost.
+        if ( substr( $model_l, -5 ) === ':free' ) {
+            return 0.0;
         }
+
+        // Rates in USD per 1K tokens (verified against openrouter.ai/models, April 2026).
+        // Per-1M prices from OpenRouter × 0.001 = per-1K.
+        $in_rate  = 0.0005; // conservative default
+        $out_rate = 0.002;
+
+        if ( strpos( $model_l, 'qwen3.5-flash' ) !== false ) {
+            // $0.065/$0.26 per 1M → per 1K
+            $in_rate  = 0.000065;
+            $out_rate = 0.00026;
+        } elseif ( strpos( $model_l, 'qwen3.5-35b' ) !== false ) {
+            // $0.1625/$1.30 per 1M → per 1K
+            $in_rate  = 0.0001625;
+            $out_rate = 0.00130;
+        } elseif ( strpos( $model_l, 'qwen3-235b' ) !== false ) {
+            $in_rate  = 0.00023;
+            $out_rate = 0.00088;
+        } elseif ( strpos( $model_l, 'qwen3-30b' ) !== false ) {
+            $in_rate  = 0.0001;
+            $out_rate = 0.00040;
+        } elseif ( strpos( $model_l, 'qwen3' ) !== false || strpos( $model_l, 'qwen' ) !== false ) {
+            $in_rate  = 0.0002;
+            $out_rate = 0.0008;
+        } elseif ( strpos( $model_l, 'minimax-m2.7' ) !== false || strpos( $model_l, 'minimax-m2.5' ) !== false ) {
+            // $0.40/$1.60 per 1M → per 1K
+            $in_rate  = 0.0004;
+            $out_rate = 0.0016;
+        } elseif ( strpos( $model_l, 'minimax' ) !== false ) {
+            $in_rate  = 0.0004;
+            $out_rate = 0.0016;
+        } elseif ( strpos( $model_l, 'llama-3.3' ) !== false ) {
+            $in_rate  = 0.00012;
+            $out_rate = 0.00030;
+        }
+
         $rates = apply_filters(
             'mfseo_openrouter_cost_per_1k',
             array( 'in' => $in_rate, 'out' => $out_rate ),
             $model
         );
-        $in_r = isset( $rates['in'] ) ? (float) $rates['in'] : $in_rate;
+        $in_r  = isset( $rates['in'] )  ? (float) $rates['in']  : $in_rate;
         $out_r = isset( $rates['out'] ) ? (float) $rates['out'] : $out_rate;
         return ( $input_tokens / 1000 * $in_r ) + ( $output_tokens / 1000 * $out_r );
     }

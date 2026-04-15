@@ -696,6 +696,7 @@ class MFSEO_Optimizer {
             'temperature' => 0.7,
             'fast_model' => true,
             'usage_context' => 'batch_optimizer',
+            'timeout' => 180,
         ));
         
         if (is_wp_error($response)) {

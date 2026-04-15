@@ -127,48 +127,103 @@ class MFSEO_API_Tester {
     }
     
     /**
-     * Test OpenRouter (OpenAI-compatible) connection.
+     * Test OpenRouter connection.
+     *
+     * Uses the fast /auth/key endpoint first (no tokens consumed, ~100–300ms).
+     * Falls back to a minimal inference call only if the key endpoint is unavailable.
      *
      * @param string $api_key API key.
-     * @param string $model   Model id, e.g. qwen/qwen3.5-flash-02-23.
+     * @param string $model   Model id shown in the UI (used only for the fallback inference path).
      * @return array|WP_Error
      */
-    public static function test_openrouter_connection($api_key, $model = 'qwen/qwen3.5-flash-02-23') {
+    public static function test_openrouter_connection($api_key, $model = 'meta-llama/llama-3.2-1b-instruct:free') {
         if (empty($api_key)) {
             return new WP_Error('empty_key', __('API key is required.', 'mindfulseo'));
         }
+
         $start_time = microtime(true);
-        $test_model = !empty($model) ? $model : 'qwen/qwen3.5-flash-02-23';
-        $referer = home_url('/');
-        if ($referer === '') {
-            $referer = 'https://mindfuldesign.me';
-        }
-        $body = array(
-            'model' => $test_model,
-            'messages' => array(
-                array('role' => 'user', 'content' => 'Hi'),
+
+        // --- Fast path: /auth/key endpoint (no inference, no tokens) ---
+        $auth_response = wp_remote_get('https://openrouter.ai/api/v1/auth/key', array(
+            'timeout'   => 10,
+            'sslverify' => true,
+            'headers'   => array(
+                'Authorization' => 'Bearer ' . $api_key,
             ),
-            'max_tokens' => 5,
-            'temperature' => 0.3,
-        );
-        $response = wp_remote_post('https://openrouter.ai/api/v1/chat/completions', array(
+        ));
+
+        $end_time      = microtime(true);
+        $response_time = round(($end_time - $start_time) * 1000);
+
+        if (!is_wp_error($auth_response)) {
+            $auth_status  = wp_remote_retrieve_response_code($auth_response);
+            $auth_decoded = json_decode(wp_remote_retrieve_body($auth_response), true);
+
+            if ($auth_status === 401) {
+                return new WP_Error('invalid_key', __('Invalid OpenRouter API key.', 'mindfulseo'));
+            }
+
+            if ($auth_status === 200 && isset($auth_decoded['data'])) {
+                $data     = $auth_decoded['data'];
+                $label    = !empty($data['label']) ? ' — ' . $data['label'] : '';
+                $limit    = isset($data['limit']) ? $data['limit'] : null;
+                $usage    = isset($data['usage']) ? $data['usage'] : null;
+                $is_free  = !empty($data['is_free_tier']);
+                $tier_tag = $is_free ? ' [free tier]' : '';
+
+                $detail = '';
+                if ($limit !== null && $usage !== null) {
+                    $remaining = round($limit - $usage, 4);
+                    $detail    = sprintf(' | $%.4f remaining', $remaining);
+                } elseif ($limit === null && $usage !== null) {
+                    $detail = sprintf(' | $%.4f used', $usage);
+                }
+
+                return array(
+                    'success'       => true,
+                    'model'         => !empty($model) ? $model : 'n/a',
+                    'response_time' => $response_time,
+                    'message'       => sprintf(
+                        __('OpenRouter OK (%dms)%s%s%s', 'mindfulseo'),
+                        $response_time,
+                        $label,
+                        $tier_tag,
+                        $detail
+                    ),
+                );
+            }
+        }
+
+        // --- Slow path: minimal inference call (only if /auth/key failed) ---
+        $test_model = !empty($model) ? $model : 'meta-llama/llama-3.2-1b-instruct:free';
+        $referer    = home_url('/') ?: 'https://mindfuldesign.me';
+
+        $infer_start = microtime(true);
+        $response    = wp_remote_post('https://openrouter.ai/api/v1/chat/completions', array(
             'timeout'   => 20,
-            'sslverify' => apply_filters('https_local_ssl_verify', true),
+            'sslverify' => true,
             'headers'   => array(
                 'Authorization' => 'Bearer ' . $api_key,
                 'Content-Type'  => 'application/json',
                 'HTTP-Referer'  => $referer,
                 'X-Title'       => 'MindfulSEO',
             ),
-            'body' => wp_json_encode($body),
+            'body' => wp_json_encode(array(
+                'model'       => $test_model,
+                'messages'    => array(array('role' => 'user', 'content' => 'Hi')),
+                'max_tokens'  => 5,
+                'temperature' => 0.1,
+            )),
         ));
-        $end_time = microtime(true);
-        $response_time = round(($end_time - $start_time) * 1000);
+        $response_time = round((microtime(true) - $infer_start) * 1000);
+
         if (is_wp_error($response)) {
             return new WP_Error('connection_failed', $response->get_error_message());
         }
+
         $status_code = wp_remote_retrieve_response_code($response);
         $decoded     = json_decode(wp_remote_retrieve_body($response), true);
+
         if ($status_code === 401) {
             return new WP_Error('invalid_key', __('Invalid OpenRouter API key.', 'mindfulseo'));
         }
@@ -180,10 +235,10 @@ class MFSEO_API_Tester {
         self::log_connection_test_row('openrouter', is_array($decoded) ? $decoded : array(), $test_model);
 
         return array(
-            'success' => true,
-            'model' => $test_model,
+            'success'       => true,
+            'model'         => $test_model,
             'response_time' => $response_time,
-            'message' => sprintf(__('OpenRouter OK (%dms) — %s', 'mindfulseo'), $response_time, $test_model),
+            'message'       => sprintf(__('OpenRouter OK (%dms) — %s', 'mindfulseo'), $response_time, $test_model),
         );
     }
 

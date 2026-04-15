@@ -432,7 +432,8 @@
         });
     }
     
-    var CONCURRENCY = 8;
+    // OpenRouter (esp. free-tier fast models) queues hard; keep parallel batch low to avoid stalls.
+    var CONCURRENCY = 2;
     var completedCount = 0;
     var activeRequests = 0;
     var nextQueueIndex = 0;

@@ -228,28 +228,24 @@
             $('.mfseo-openrouter-only').toggle(on);
             $('.mfseo-backend-desc-direct').toggle(!on);
             $('.mfseo-backend-desc-or').toggle(on);
-            $('.mfseo-primary-desc-direct').toggle(!on);
-            $('.mfseo-primary-desc-or').toggle(on);
+            $('.mfseo-direct-primary-row').toggle(!on);
+            $('#primary_provider').prop('disabled', on);
             $('.mfseo-fallback-desc-direct').toggle(!on);
             $('.mfseo-fallback-desc-or').toggle(on);
             mfseoToggleDirectCredentialRows();
         }
         function mfseoSyncBackendFromPrimary() {
             var v = $('#primary_provider').val();
-            if (v === 'openrouter') {
-                $('#mfseo-ai-backend').val('openrouter');
-            } else if (v === 'openai' || v === 'claude') {
+            if (v === 'openai' || v === 'claude') {
                 $('#mfseo-ai-backend').val('direct');
             }
             mfseoToggleOpenRouterRows();
         }
         function mfseoSyncPrimaryFromBackend() {
             var b = $('#mfseo-ai-backend').val();
-            if (b === 'openrouter') {
-                $('#primary_provider').val('openrouter');
-            } else {
+            if (b !== 'openrouter') {
                 var pr = $('#primary_provider').val();
-                if (pr === 'openrouter') {
+                if (pr !== 'openai' && pr !== 'claude') {
                     var fb = $('#mfseo_fallback_direct_priority').val();
                     $('#primary_provider').val(
                         fb === 'claude' || fb === 'openai' ? fb : 'openai'
